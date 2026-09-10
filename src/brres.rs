@@ -93,8 +93,6 @@ pub struct RootSubfile {
 impl Decode for RootSubfile {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let magic = reader.read_u8_array::<4>()?;
-        println!("{magic:?}");
-
         if magic != Self::MAGIC {
             return Err(EncodingError::InvalidFile(
                 "root subfile has incorrect magic".to_owned(),
@@ -373,23 +371,37 @@ impl Encode for IndexGroupEntry {
     }
 }
 
+/// Describes locations of the subfiles in this BRRES file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexGroup {
+    /// Index into the BRRES file where this group starts. Generally this is just right after the BRRES header.
     pub group_start: u32,
+    /// The index group header.
     pub header: IndexGroupHeader,
+    /// `header.number + 1` entries.
+    ///
+    /// The first entry is a dummy entry that has no name.
     pub entries: Vec<IndexGroupEntry>,
 }
 
 impl IndexGroup {
-    /// # Note
-    /// The first index group entry has no name and this function should not be called with it.
+    /// Obtains the name of the given index group entry using its name pointer.
+    ///
+    /// `data` should be the entire BRRES file (including header).
+    ///
+    /// # Conditions
+    /// - The given index group entry must be owned by the current index group.
+    /// - The first index group entry has no name and this function should not be called with it.
+    ///
+    /// Violating these conditions will not cause unsoundness but will either cause a panic due to invalid
+    /// UTF-8 or return incorrect strings.
     pub fn get_entry_name<'pool>(
         &self,
         data: &'pool [u8],
         entry: &IndexGroupEntry,
     ) -> EncodingResult<&'pool str> {
         let name_start = self.group_start + entry.name_pointer;
-        dbg!(name_start);
+        dbg!(name_start, self.group_start, entry.name_pointer);
 
         let name_buf = &data[name_start as usize - 4..];
         let name_len = Cursor::new(name_buf).read_u32::<BigEndian>()? as usize;
@@ -400,8 +412,6 @@ impl IndexGroup {
         #[cfg(debug_assertions)]
         {
             let null_position = name_buf[4..].iter().position(|&b| b == 0).unwrap();
-            dbg!(null_position);
-
             let null_name = str::from_utf8(&name_buf[4..4 + null_position as usize])?;
 
             debug_assert_eq!(
@@ -411,6 +421,10 @@ impl IndexGroup {
         }
 
         Ok(name)
+    }
+
+    pub fn get_entry_data_start<'pool>(&self, entry: &IndexGroupEntry) -> u32 {
+        self.group_start + entry.data_pointer
     }
 }
 
@@ -422,7 +436,6 @@ impl Decode for IndexGroup {
         let mut entries = Vec::with_capacity(header.number as usize);
         for _ in 0..header.number + 1 {
             let entry = IndexGroupEntry::decode(reader)?;
-            println!("{entry:?}");
             entries.push(entry);
         }
 
@@ -460,18 +473,27 @@ impl Decode for Archive {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let header = Header::decode(reader)?;
 
-        println!("{header:?}");
-
         // Skip to root start
         reader.set_position(header.root_offset as u64);
 
-        let root_subfile = RootSubfile::decode(reader)?;
+        let _root = RootSubfile::decode(reader)?;
         let index_group = IndexGroup::decode(reader)?;
 
-        let data = &reader.get_ref();
         for entry in &index_group.entries[1..] {
-            let name = index_group.get_entry_name(data, entry)?;
-            dbg!(name);
+            // dbg!(entry);
+
+            let name = index_group.get_entry_name(reader.get_ref(), entry)?;
+            tracing::trace!("Found index entry `{name}`");
+
+            reader.set_position(index_group.get_entry_data_start(&entry) as u64);
+            let secondary_group = IndexGroup::decode(reader)?;
+
+            // dbg!(&secondary_group);
+
+            let secondary_name =
+                secondary_group.get_entry_name(reader.get_ref(), &secondary_group.entries[1])?;
+
+            dbg!(secondary_name);
         }
 
         todo!()
