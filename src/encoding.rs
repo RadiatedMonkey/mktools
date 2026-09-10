@@ -1,11 +1,13 @@
 use std::io::Cursor;
 
+use byteorder::{ByteOrder, ReadBytesExt, WriteBytesExt};
+
 use crate::error::EncodingResult;
 
 macro_rules! impl_byteorder_arrays {
     ($($ty: ty),*) => {
         paste::paste! {
-            pub trait WriteArrayExt {
+            pub trait WriteArrayExt: byteorder::WriteBytesExt {
                 fn write_u8_array<const N: usize>(&mut self, values: [u8; N]) -> std::io::Result<()>;
                 fn write_i8_array<const N: usize>(&mut self, values: [i8; N]) -> std::io::Result<()>;
 
@@ -45,7 +47,7 @@ macro_rules! impl_byteorder_arrays {
                 )*
             }
 
-            pub trait ReadArrayExt {
+            pub trait ReadArrayExt: byteorder::ReadBytesExt {
                 fn read_u8_array<const N: usize>(&mut self) -> std::io::Result<[u8; N]>;
                 fn read_i8_array<const N: usize>(&mut self) -> std::io::Result<[i8; N]>;
 

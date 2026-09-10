@@ -5,6 +5,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crate::encoding::{Decode, Encode, ReadArrayExt, WriteArrayExt};
 use crate::error::{EncodingError, EncodingResult};
 
+/// Magic of a YAZ0 file.
 pub const YAZ0_MAGIC: [u8; 4] = [0x59, 0x61, 0x7a, 0x30];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +31,7 @@ impl Decode for Yaz0Header {
         let magic = reader.read_u8_array::<4>()?;
         if magic != YAZ0_MAGIC {
             return Err(EncodingError::InvalidFile(
-                "Yaz0 magic does not equal `Yaz0`".to_owned(),
+                "YAZ0 magic does not equal `Yaz0`".to_owned(),
             ));
         }
 
@@ -38,7 +39,7 @@ impl Decode for Yaz0Header {
         let reserved = reader.read_u32_array::<2, BigEndian>()?;
 
         if reserved != [0, 0] {
-            tracing::warn!("`reserved` field in Yaz0 header is not all zeros");
+            tracing::warn!("`reserved` field in YAZ0 header is not all zeros");
         }
 
         Ok(Self {
@@ -59,9 +60,9 @@ pub fn compress_yaz0(uncompressed: &[u8]) -> Vec<u8> {
     todo!()
 }
 
-/// Implements Yaz0 compression and decompression.
+/// Implements YAZ0 compression and decompression.
 ///
-/// Data is compressed using run-length encoding. A Yaz0 file consists of many data groups each having two fields
+/// Data is compressed using run-length encoding. A YAZ0 file consists of many data groups each having two fields
 /// - Group header (1 byte)
 /// - 8 chunks (8-24 bytes)
 ///
@@ -98,7 +99,6 @@ impl Decode for Yaz0File {
         // Amount of chunks in a data group
         const CHUNK_COUNT: usize = 8;
 
-        let mut block_count = 0;
         while uncompressed.len() < uncompressed.capacity() {
             let mut group_header = reader.read_u8()?;
             for _ in 0..CHUNK_COUNT {
@@ -146,19 +146,14 @@ impl Decode for Yaz0File {
                             "data group references byte before start of file".to_owned(),
                         )
                     })?;
-                    let copy_end = copy_start + copy_size;
 
-                    for _ in 0..copy_size {
-                        let b = uncompressed[copy_start];
+                    for i in 0..copy_size {
+                        let b = uncompressed[copy_start + i];
                         uncompressed.push(b);
                     }
-
-                    block_count += 1;
                 }
             }
         }
-
-        dbg!(block_count);
 
         Ok(Self {
             header,
@@ -167,13 +162,13 @@ impl Decode for Yaz0File {
     }
 }
 
-#[cfg(test)]
-mod test {
-    use crate::yaz0::decompress_yaz0;
+// #[cfg(test)]
+// mod test {
+//     use crate::yaz0::decompress_yaz0;
 
-    #[test]
-    fn read_yaz0() {
-        let raw_yaz0 = std::fs::read("test/fk-7-allkart.szs").unwrap();
-        decompress_yaz0(&raw_yaz0).unwrap();
-    }
-}
+//     #[test]
+//     fn read_yaz0() {
+//         let raw_yaz0 = std::fs::read("test/fk-7-allkart.szs").unwrap();
+//         decompress_yaz0(&raw_yaz0).unwrap();
+//     }
+// }

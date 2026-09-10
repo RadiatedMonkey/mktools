@@ -4,6 +4,8 @@ use thiserror::Error;
 pub enum EncodingError {
     #[error("invalid file: {0}")]
     InvalidFile(String),
+    #[error("invalid string:")]
+    InvalidString(String),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("unknown: {0}")]
@@ -19,6 +21,18 @@ impl From<std::io::Error> for EncodingError {
             ErrorKind::NotFound => Self::NotFound(value.to_string()),
             _ => Self::Unknown(value.to_string()),
         }
+    }
+}
+
+impl From<std::ffi::FromBytesUntilNulError> for EncodingError {
+    fn from(value: std::ffi::FromBytesUntilNulError) -> Self {
+        EncodingError::InvalidString(value.to_string())
+    }
+}
+
+impl From<std::str::Utf8Error> for EncodingError {
+    fn from(value: std::str::Utf8Error) -> Self {
+        EncodingError::InvalidString(value.to_string())
     }
 }
 
