@@ -103,7 +103,7 @@ impl Subfile for RootSubfile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelSubfile {
+pub struct SubfileHeader {
     /// Length of this subfile.
     pub subfile_length: u32,
     /// Version of ths subfile. For MDL0 this is either 8 or 11.
@@ -117,15 +117,8 @@ pub struct ModelSubfile {
     pub name_offset: i32,
 }
 
-impl Decode for ModelSubfile {
+impl Decode for SubfileHeader {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
-        let magic = reader.read_u8_array::<4>()?;
-        if magic != Self::MAGIC {
-            return Err(EncodingError::InvalidFile(
-                "incorrect MDL0 file magic".to_owned(),
-            ));
-        }
-
         let subfile_length = reader.read_u32::<BigEndian>()?;
         let subfile_version = reader.read_u32::<BigEndian>()?;
         let brres_offset = reader.read_i32::<BigEndian>()?;
@@ -149,8 +142,142 @@ impl Decode for ModelSubfile {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelSubfile {
+    pub header: SubfileHeader,
+}
+
+impl Decode for ModelSubfile {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let magic = reader.read_u8_array::<4>()?;
+        if magic != Self::MAGIC {
+            return Err(EncodingError::InvalidFile(
+                "incorrect MDL0 file magic".to_owned(),
+            ));
+        }
+
+        let header = SubfileHeader::decode(reader)?;
+
+        todo!()
+    }
+}
+
 impl Subfile for ModelSubfile {
     const MAGIC: [u8; 4] = [0x4d, 0x44, 0x4c, 0x30]; // "MDL0"
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AnimationPolicy {
+    OneTime,
+    Loop,
+}
+
+impl TryFrom<u32> for AnimationPolicy {
+    type Error = EncodingError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(match value {
+            0x00 => Self::OneTime,
+            0x01 => Self::Loop,
+            _ => {
+                return Err(EncodingError::InvalidFile(format!(
+                    "invalid animation policy: {value} (expected 0 or 1)"
+                )));
+            }
+        })
+    }
+}
+
+impl Decode for AnimationPolicy {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let policy = reader.read_u32::<BigEndian>()?;
+        Self::try_from(policy)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ScalingRule {
+    Standard,
+    Softimage,
+    Maya,
+}
+
+impl TryFrom<u32> for ScalingRule {
+    type Error = EncodingError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(match value {
+            0x00 => Self::Standard,
+            0x01 => Self::Softimage,
+            0x02 => Self::Maya,
+            _ => {
+                return Err(EncodingError::InvalidFile(format!(
+                    "invalid scaling rule: {} (expected 0, 1 or 2)",
+                    value
+                )));
+            }
+        })
+    }
+}
+
+impl Decode for ScalingRule {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let rule = reader.read_u32::<BigEndian>()?;
+        Self::try_from(rule)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chr0Header {
+    pub frame_count: u16,
+    pub anim_data_count: u16,
+    pub anim_policy: AnimationPolicy,
+    pub scaling_rule: ScalingRule,
+}
+
+impl Decode for Chr0Header {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let frame_count = reader.read_u16::<BigEndian>()?;
+        let anim_data_count = reader.read_u16::<BigEndian>()?;
+        let anim_policy = AnimationPolicy::decode(reader)?;
+        let scaling_rule = ScalingRule::decode(reader)?;
+
+        Ok(Self {
+            frame_count,
+            anim_data_count,
+            anim_policy,
+            scaling_rule,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chr0Subfile {
+    pub subfile_header: SubfileHeader,
+    pub chr0_header: Chr0Header,
+}
+
+impl Decode for Chr0Subfile {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let magic = reader.read_u8_array::<4>()?;
+        if magic != Self::MAGIC {
+            return Err(EncodingError::InvalidFile(
+                "incorrect CHR0 file magic".to_owned(),
+            ));
+        }
+
+        let subfile_header = SubfileHeader::decode(reader)?;
+        let chr0_header = Chr0Header::decode(reader)?;
+
+        dbg!(subfile_header, chr0_header);
+
+        todo!()
+    }
+}
+
+impl Subfile for Chr0Subfile {
+    const MAGIC: [u8; 4] = [0x43, 0x48, 0x52, 0x30]; // "CHR0"
 }
 
 macro_rules! impl_subfile_enum {
@@ -239,14 +366,35 @@ impl Encode for IndexGroupEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexGroup {
+    pub group_start: u32,
     pub header: IndexGroupHeader,
     pub entries: Vec<IndexGroupEntry>,
 }
 
+impl IndexGroup {
+    pub fn get_entry_name<'pool>(
+        &self,
+        data: &'pool [u8],
+        entry: &IndexGroupEntry,
+    ) -> EncodingResult<&'pool str> {
+        let name_buf = &data[self.group_start as usize + entry.name_pointer as usize..];
+
+        dbg!(entry.name_pointer);
+
+        let mut reader = Cursor::new(name_buf);
+        let name_len = reader.read_u32::<BigEndian>()?;
+        dbg!(name_len);
+
+        let name = String::from_utf8_lossy(&name_buf[4..4 + name_len as usize]);
+        dbg!(name);
+
+        todo!()
+    }
+}
+
 impl Decode for IndexGroup {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
-        let start = reader.position();
-
+        let group_start = reader.position() as u32;
         let header = IndexGroupHeader::decode(reader)?;
 
         let mut entries = Vec::with_capacity(header.number as usize);
@@ -257,12 +405,16 @@ impl Decode for IndexGroup {
         }
 
         debug_assert_eq!(
-            reader.position() - start,
-            header.length as u64,
+            reader.position() as u32 - group_start,
+            header.length,
             "not all index group entries were read"
         );
 
-        Ok(Self { header, entries })
+        Ok(Self {
+            group_start,
+            header,
+            entries,
+        })
     }
 }
 
@@ -292,21 +444,12 @@ impl Decode for Archive {
         reader.set_position(header.root_offset as u64);
 
         let root_subfile = RootSubfile::decode(reader)?;
-        let root_index_group = IndexGroup::decode(reader)?;
+        let index_group = IndexGroup::decode(reader)?;
 
-        dbg!(root_index_group);
-
-        // let mut sections = Vec::with_capacity(header.section_count as usize);
-        // sections.push(SubfileData::Root(root_subfile));
-
-        // // Root is part of these sections
-        // for _ in 1..header.section_count {
-        //     let magic = reader.read_u8_array::<4>()?;
-        //     println!("{:?}", str::from_utf8(&magic));
-        // }
-
-        let read = reader.position() - header.root_offset as u64;
-        dbg!(read);
+        let root_index = &index_group.entries[1];
+        let root_name = index_group
+            .get_entry_name(&reader.get_ref()[header.root_offset as usize..], root_index)?;
+        dbg!(root_name);
 
         todo!()
     }
