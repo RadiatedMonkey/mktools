@@ -32,6 +32,8 @@ mod test {
             panic!("second node is not a file")
         };
 
+        std::fs::write("./dump.bin", &content).unwrap();
+
         let mut cursor = Cursor::new(content.as_slice());
         let mut brres = brres::Archive::decode(&mut cursor).unwrap();
     }

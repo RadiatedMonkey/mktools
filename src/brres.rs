@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::{
     encoding::{Decode, Encode, ReadArrayExt},
@@ -15,12 +15,21 @@ const BE_BOM: [u8; 2] = [0xFE, 0xFF];
 fn get_section_count(ty: SubfileType, version: u32) -> EncodingResult<usize> {
     Ok(match ty {
         SubfileType::Root => 0,
-        SubfileType::Model => match version {
+        SubfileType::Mdl0 => match version {
             8 => 11,
             11 => 14,
             _ => {
                 return Err(EncodingError::InvalidFile(format!(
                     "invalid MDL0 version: {version} (must be 8, 11)"
+                )));
+            }
+        },
+        SubfileType::Chr0 => match version {
+            3 => 1,
+            5 => 2,
+            _ => {
+                return Err(EncodingError::InvalidFile(format!(
+                    "invalid CHR0 version: {version} (must be 3, 5)"
                 )));
             }
         },
@@ -123,7 +132,7 @@ impl Decode for SubfileHeader {
         let subfile_version = reader.read_u32::<BigEndian>()?;
         let brres_offset = reader.read_i32::<BigEndian>()?;
 
-        let section_count = get_section_count(SubfileType::Model, subfile_version)?;
+        let section_count = get_section_count(SubfileType::Mdl0, subfile_version)?;
 
         let mut offsets = Vec::with_capacity(section_count);
         for _ in 0..section_count {
@@ -143,11 +152,11 @@ impl Decode for SubfileHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelSubfile {
+pub struct Mdl0Subfile {
     pub header: SubfileHeader,
 }
 
-impl Decode for ModelSubfile {
+impl Decode for Mdl0Subfile {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let magic = reader.read_u8_array::<4>()?;
         if magic != Self::MAGIC {
@@ -162,7 +171,7 @@ impl Decode for ModelSubfile {
     }
 }
 
-impl Subfile for ModelSubfile {
+impl Subfile for Mdl0Subfile {
     const MAGIC: [u8; 4] = [0x4d, 0x44, 0x4c, 0x30]; // "MDL0"
 }
 
@@ -296,7 +305,7 @@ macro_rules! impl_subfile_enum {
     }
 }
 
-impl_subfile_enum!(Root, Model);
+impl_subfile_enum!(Root, Mdl0, Chr0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexGroupHeader {
@@ -327,8 +336,8 @@ pub struct IndexGroupEntry {
     pub flag: u16,
     pub left_index: u16,
     pub right_index: u16,
-    pub name_pointer: i32,
-    pub data_pointer: i32,
+    pub name_pointer: u32,
+    pub data_pointer: u32,
 }
 
 impl Decode for IndexGroupEntry {
@@ -337,8 +346,8 @@ impl Decode for IndexGroupEntry {
         let flag = reader.read_u16::<BigEndian>()?;
         let left_index = reader.read_u16::<BigEndian>()?;
         let right_index = reader.read_u16::<BigEndian>()?;
-        let name_pointer = reader.read_i32::<BigEndian>()?;
-        let data_pointer = reader.read_i32::<BigEndian>()?;
+        let name_pointer = reader.read_u32::<BigEndian>()?;
+        let data_pointer = reader.read_u32::<BigEndian>()?;
 
         Ok(Self {
             entry_id,
@@ -357,8 +366,8 @@ impl Encode for IndexGroupEntry {
         writer.write_u16::<BigEndian>(self.flag)?;
         writer.write_u16::<BigEndian>(self.left_index)?;
         writer.write_u16::<BigEndian>(self.right_index)?;
-        writer.write_i32::<BigEndian>(self.name_pointer)?;
-        writer.write_i32::<BigEndian>(self.data_pointer)?;
+        writer.write_u32::<BigEndian>(self.name_pointer)?;
+        writer.write_u32::<BigEndian>(self.data_pointer)?;
 
         Ok(())
     }
@@ -372,23 +381,36 @@ pub struct IndexGroup {
 }
 
 impl IndexGroup {
+    /// # Note
+    /// The first index group entry has no name and this function should not be called with it.
     pub fn get_entry_name<'pool>(
         &self,
         data: &'pool [u8],
         entry: &IndexGroupEntry,
     ) -> EncodingResult<&'pool str> {
-        let name_buf = &data[self.group_start as usize + entry.name_pointer as usize..];
+        let name_start = self.group_start + entry.name_pointer;
+        dbg!(name_start);
 
-        dbg!(entry.name_pointer);
+        let name_buf = &data[name_start as usize - 4..];
+        let name_len = Cursor::new(name_buf).read_u32::<BigEndian>()? as usize;
+        let name = str::from_utf8(&name_buf[4..name_len + 4])?;
 
-        let mut reader = Cursor::new(name_buf);
-        let name_len = reader.read_u32::<BigEndian>()?;
-        dbg!(name_len);
+        // Confirm both the null terminated and length prefixed strings are equal.
+        // This is an extra check to ensure offsets are correct.
+        #[cfg(debug_assertions)]
+        {
+            let null_position = name_buf[4..].iter().position(|&b| b == 0).unwrap();
+            dbg!(null_position);
 
-        let name = String::from_utf8_lossy(&name_buf[4..4 + name_len as usize]);
-        dbg!(name);
+            let null_name = str::from_utf8(&name_buf[4..4 + null_position as usize])?;
 
-        todo!()
+            debug_assert_eq!(
+                null_name, name,
+                "prefixed and null-terminated names are not equal"
+            );
+        }
+
+        Ok(name)
     }
 }
 
@@ -446,10 +468,11 @@ impl Decode for Archive {
         let root_subfile = RootSubfile::decode(reader)?;
         let index_group = IndexGroup::decode(reader)?;
 
-        let root_index = &index_group.entries[1];
-        let root_name = index_group
-            .get_entry_name(&reader.get_ref()[header.root_offset as usize..], root_index)?;
-        dbg!(root_name);
+        let data = &reader.get_ref();
+        for entry in &index_group.entries[1..] {
+            let name = index_group.get_entry_name(data, entry)?;
+            dbg!(name);
+        }
 
         todo!()
     }
