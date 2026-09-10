@@ -123,13 +123,6 @@ impl Decode for Yaz0File {
                     uncompressed.push(reader.read_u8()?);
                 } else {
                     // Perform run-length decoding.
-                    // Bytes either look like
-                    // NR RR or 0R RR NN
-                    //
-                    // RRR is a value between 0x000 and 0xfff that specifies the source location of the stream.
-                    // For the first case, SIZE = N + 2 while for the second case SIZE = N + 0x12.
-                    //
-                    // A chunk may also reference itself.
 
                     // Read first two bytes of chunk
                     let b1 = reader.read_u8()? as usize;
@@ -162,7 +155,6 @@ impl Decode for Yaz0File {
             }
         }
 
-        dbg!(uncompressed.len(), header.uncompressed_size);
         if uncompressed.len() != header.uncompressed_size as usize {
             return Err(EncodingError::InvalidFile(format!(
                 "uncompressed size in header does not equal actual size ({} vs. {})",
@@ -179,14 +171,3 @@ impl Decode for Yaz0File {
         })
     }
 }
-
-// #[cfg(test)]
-// mod test {
-//     use crate::yaz0::decompress_yaz0;
-
-//     #[test]
-//     fn read_yaz0() {
-//         let raw_yaz0 = std::fs::read("test/fk-7-allkart.szs").unwrap();
-//         decompress_yaz0(&raw_yaz0).unwrap();
-//     }
-// }

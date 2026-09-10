@@ -275,8 +275,6 @@ impl Decode for Archive {
                         )));
                     }
 
-                    dbg!(data_end, raw_node.data2);
-
                     NodeType::File {
                         content: reader_buf[data_start..data_end].to_owned(),
                         size: raw_node.data2,
@@ -290,6 +288,12 @@ impl Decode for Archive {
 
             nodes.push(Node { name, data })
         }
+
+        debug_assert_eq!(
+            reader.position(),
+            spool_start as u64,
+            "not all bytes of the arc file were read"
+        );
 
         tracing::trace!("Successfully loaded node names and contents");
 

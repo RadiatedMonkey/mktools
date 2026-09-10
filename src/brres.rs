@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
-use byteorder::{BigEndian, ReadBytesExt};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::{
-    encoding::{Decode, ReadArrayExt},
+    encoding::{Decode, Encode, ReadArrayExt},
     error::{EncodingError, EncodingResult},
 };
 
@@ -76,6 +76,7 @@ pub trait Subfile {
     const MAGIC: [u8; 4];
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootSubfile {
     pub size: u32,
 }
@@ -83,6 +84,8 @@ pub struct RootSubfile {
 impl Decode for RootSubfile {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let magic = reader.read_u8_array::<4>()?;
+        println!("{magic:?}");
+
         if magic != Self::MAGIC {
             return Err(EncodingError::InvalidFile(
                 "root subfile has incorrect magic".to_owned(),
@@ -99,6 +102,7 @@ impl Subfile for RootSubfile {
     const MAGIC: [u8; 4] = [0x72, 0x6f, 0x6f, 0x74]; // "root"
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSubfile {
     /// Length of this subfile.
     pub subfile_length: u32,
@@ -152,10 +156,12 @@ impl Subfile for ModelSubfile {
 macro_rules! impl_subfile_enum {
     ($($ty: ident),*) => {
         paste::paste! {
+            #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
             pub enum SubfileType {
                 $($ty),*
             }
 
+            #[derive(Debug, Clone, PartialEq, Eq)]
             pub enum SubfileData {
                 $($ty([< $ty Subfile >])),*
             }
@@ -165,13 +171,142 @@ macro_rules! impl_subfile_enum {
 
 impl_subfile_enum!(Root, Model);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexGroupHeader {
+    pub length: u32,
+    pub number: u32,
+}
+
+impl Decode for IndexGroupHeader {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        Ok(Self {
+            length: reader.read_u32::<BigEndian>()?,
+            number: reader.read_u32::<BigEndian>()?,
+        })
+    }
+}
+
+impl Encode for IndexGroupHeader {
+    fn encode_into(&self, writer: &mut Vec<u8>) -> EncodingResult<()> {
+        writer.write_u32::<BigEndian>(self.length)?;
+        writer.write_u32::<BigEndian>(self.number)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexGroupEntry {
+    pub entry_id: u16,
+    pub flag: u16,
+    pub left_index: u16,
+    pub right_index: u16,
+    pub name_pointer: i32,
+    pub data_pointer: i32,
+}
+
+impl Decode for IndexGroupEntry {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let entry_id = reader.read_u16::<BigEndian>()?;
+        let flag = reader.read_u16::<BigEndian>()?;
+        let left_index = reader.read_u16::<BigEndian>()?;
+        let right_index = reader.read_u16::<BigEndian>()?;
+        let name_pointer = reader.read_i32::<BigEndian>()?;
+        let data_pointer = reader.read_i32::<BigEndian>()?;
+
+        Ok(Self {
+            entry_id,
+            flag,
+            left_index,
+            right_index,
+            name_pointer,
+            data_pointer,
+        })
+    }
+}
+
+impl Encode for IndexGroupEntry {
+    fn encode_into(&self, writer: &mut Vec<u8>) -> EncodingResult<()> {
+        writer.write_u16::<BigEndian>(self.entry_id)?;
+        writer.write_u16::<BigEndian>(self.flag)?;
+        writer.write_u16::<BigEndian>(self.left_index)?;
+        writer.write_u16::<BigEndian>(self.right_index)?;
+        writer.write_i32::<BigEndian>(self.name_pointer)?;
+        writer.write_i32::<BigEndian>(self.data_pointer)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexGroup {
+    pub header: IndexGroupHeader,
+    pub entries: Vec<IndexGroupEntry>,
+}
+
+impl Decode for IndexGroup {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let start = reader.position();
+
+        let header = IndexGroupHeader::decode(reader)?;
+
+        let mut entries = Vec::with_capacity(header.number as usize);
+        for _ in 0..header.number + 1 {
+            let entry = IndexGroupEntry::decode(reader)?;
+            println!("{entry:?}");
+            entries.push(entry);
+        }
+
+        debug_assert_eq!(
+            reader.position() - start,
+            header.length as u64,
+            "not all index group entries were read"
+        );
+
+        Ok(Self { header, entries })
+    }
+}
+
+impl Encode for IndexGroup {
+    fn encode_into(&self, writer: &mut Vec<u8>) -> EncodingResult<()> {
+        self.header.encode_into(writer)?;
+        for entry in &self.entries {
+            entry.encode_into(writer)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Archive {
     pub sections: Vec<SubfileData>,
 }
 
 impl Decode for Archive {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let header = Header::decode(reader)?;
+
+        println!("{header:?}");
+
+        // Skip to root start
+        reader.set_position(header.root_offset as u64);
+
         let root_subfile = RootSubfile::decode(reader)?;
+        let root_index_group = IndexGroup::decode(reader)?;
+
+        dbg!(root_index_group);
+
+        // let mut sections = Vec::with_capacity(header.section_count as usize);
+        // sections.push(SubfileData::Root(root_subfile));
+
+        // // Root is part of these sections
+        // for _ in 1..header.section_count {
+        //     let magic = reader.read_u8_array::<4>()?;
+        //     println!("{:?}", str::from_utf8(&magic));
+        // }
+
+        let read = reader.position() - header.root_offset as u64;
+        dbg!(read);
 
         todo!()
     }

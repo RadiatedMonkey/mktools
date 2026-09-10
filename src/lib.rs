@@ -25,7 +25,10 @@ mod test {
         let mut cursor = Cursor::new(decompressed.as_slice());
         let mut arc = arc::Archive::decode(&mut cursor).unwrap();
 
-        let arc::NodeType::File { content, .. } = arc.nodes.remove(2).data else {
+        let node = arc.nodes.remove(2);
+        tracing::debug!("Opening node {}", node.name);
+
+        let arc::NodeType::File { content, .. } = node.data else {
             panic!("second node is not a file")
         };
 
