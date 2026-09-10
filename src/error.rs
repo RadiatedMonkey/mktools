@@ -8,6 +8,8 @@ pub enum EncodingError {
     InvalidString(String),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("unsupported: {0}")]
+    Unsupported(String),
     #[error("unknown: {0}")]
     Unknown(String),
 }

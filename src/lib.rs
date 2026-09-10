@@ -1,4 +1,5 @@
 pub mod arc;
+pub mod brres;
 pub mod encoding;
 pub mod error;
 pub mod yaz0;
@@ -11,7 +12,7 @@ fn setup_tracing() {
 
 #[cfg(test)]
 mod test {
-    use crate::{arc::Archive, encoding::Decode, yaz0::decompress_yaz0};
+    use crate::{arc, brres, encoding::Decode, yaz0::decompress_yaz0};
     use std::io::Cursor;
 
     #[test]
@@ -22,6 +23,13 @@ mod test {
         let decompressed = decompress_yaz0(&raw_yaz0).unwrap();
 
         let mut cursor = Cursor::new(decompressed.as_slice());
-        let arc = Archive::decode(&mut cursor).unwrap();
+        let mut arc = arc::Archive::decode(&mut cursor).unwrap();
+
+        let arc::NodeType::File { content, .. } = arc.nodes.remove(2).data else {
+            panic!("second node is not a file")
+        };
+
+        let mut cursor = Cursor::new(content.as_slice());
+        let mut brres = brres::Archive::decode(&mut cursor).unwrap();
     }
 }

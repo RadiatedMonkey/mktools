@@ -8,11 +8,11 @@ use crate::{
 };
 
 /// Magic of an ARC file.
-pub const ARC_MAGIC: u32 = 0x55AA382D;
+const ARC_MAGIC: u32 = 0x55AA382D;
 
 /// See [`Custom Mario Kart Wiiki`](https://mkwiiki.org/wiki/ARC_(File_Format)) for more info.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Header {
+struct Header {
     /// Offset to the first node in the archive.
     pub node_offset: i32,
     /// Size of all nodes including the string table.
@@ -92,6 +92,15 @@ impl TryFrom<u8> for RawNodeType {
                 )));
             }
         })
+    }
+}
+
+impl From<&NodeType> for RawNodeType {
+    fn from(value: &NodeType) -> Self {
+        match value {
+            NodeType::File { .. } => RawNodeType::File,
+            NodeType::Directory { .. } => RawNodeType::Directory,
+        }
     }
 }
 
@@ -182,8 +191,48 @@ pub struct Node {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Archive {
-    pub header: Header,
     pub nodes: Vec<Node>,
+}
+
+impl Archive {
+    /// Sorts all files in alphabetical order within their directory.
+    pub fn sort(&mut self) {
+        tracing::trace!("Sorting {} ARC nodes", self.nodes.len());
+
+        todo!()
+    }
+}
+
+impl Encode for Archive {
+    fn encode_into(&self, writer: &mut Vec<u8>) -> EncodingResult<()> {
+        tracing::trace!("Encoding {} ARC nodes", self.nodes.len());
+
+        let spool_size = 0;
+        let fpool_offset = 0;
+
+        let size = ARC_NODE_SIZE * self.nodes.len() + spool_size;
+        let header = Header {
+            node_offset: ARC_NODE_SIZE as i32,
+            file_offset: fpool_offset,
+            size: size as i32,
+            reserved: [0; 4],
+        };
+
+        header.encode_into(writer)?;
+
+        for node in &self.nodes {
+            // let raw_node = RawNode {
+            //     ty: RawNodeType::from(&node.data),
+            // };
+            let raw_node: RawNode = todo!();
+
+            raw_node.encode_into(writer)?;
+        }
+
+        todo!();
+
+        Ok(())
+    }
 }
 
 impl Decode for Archive {
@@ -244,6 +293,6 @@ impl Decode for Archive {
 
         tracing::trace!("Successfully loaded node names and contents");
 
-        Ok(Self { header, nodes })
+        Ok(Self { nodes })
     }
 }
