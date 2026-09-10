@@ -121,16 +121,17 @@ pub struct SubfileHeader {
     /// The number can be obtained using the [`get_section_count`] function.
     pub offsets: Vec<i32>,
     /// String offset to the name of this subfile.
+    /// This offset is from the start of the BRRES file.
     pub name_offset: i32,
 }
 
-impl Decode for SubfileHeader {
-    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+impl SubfileHeader {
+    fn decode(reader: &mut Cursor<&[u8]>, ty: SubfileType) -> EncodingResult<Self> {
         let subfile_length = reader.read_u32::<BigEndian>()?;
         let subfile_version = reader.read_u32::<BigEndian>()?;
         let brres_offset = reader.read_i32::<BigEndian>()?;
 
-        let section_count = get_section_count(SubfileType::Mdl0, subfile_version)?;
+        let section_count = get_section_count(ty, subfile_version)?;
 
         let mut offsets = Vec::with_capacity(section_count);
         for _ in 0..section_count {
@@ -156,14 +157,9 @@ pub struct Mdl0Subfile {
 
 impl Decode for Mdl0Subfile {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
-        let magic = reader.read_u8_array::<4>()?;
-        if magic != Self::MAGIC {
-            return Err(EncodingError::InvalidFile(
-                "incorrect MDL0 file magic".to_owned(),
-            ));
-        }
+        tracing::trace!("Reading MDL0 file");
 
-        let header = SubfileHeader::decode(reader)?;
+        let header = SubfileHeader::decode(reader, SubfileType::Mdl0)?;
 
         todo!()
     }
@@ -267,17 +263,14 @@ pub struct Chr0Subfile {
 
 impl Decode for Chr0Subfile {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
-        let magic = reader.read_u8_array::<4>()?;
-        if magic != Self::MAGIC {
-            return Err(EncodingError::InvalidFile(
-                "incorrect CHR0 file magic".to_owned(),
-            ));
-        }
+        tracing::trace!("Reading CHR0 file");
 
-        let subfile_header = SubfileHeader::decode(reader)?;
+        let subfile_header = SubfileHeader::decode(reader, SubfileType::Chr0)?;
+        dbg!(subfile_header);
+
         let chr0_header = Chr0Header::decode(reader)?;
 
-        dbg!(subfile_header, chr0_header);
+        // dbg!(subfile_header, chr0_header);
 
         todo!()
     }
@@ -391,7 +384,6 @@ impl IndexGroup {
     ///
     /// # Conditions
     /// - The given index group entry must be owned by the current index group.
-    /// - The first index group entry has no name and this function should not be called with it.
     ///
     /// Violating these conditions will not cause unsoundness but will either cause a panic due to invalid
     /// UTF-8 or return incorrect strings.
@@ -400,9 +392,11 @@ impl IndexGroup {
         data: &'pool [u8],
         entry: &IndexGroupEntry,
     ) -> EncodingResult<&'pool str> {
-        let name_start = self.group_start + entry.name_pointer;
-        dbg!(name_start, self.group_start, entry.name_pointer);
+        if entry.name_pointer == 0 {
+            return Ok(""); // This entry has no name.
+        }
 
+        let name_start = self.group_start + entry.name_pointer;
         let name_buf = &data[name_start as usize - 4..];
         let name_len = Cursor::new(name_buf).read_u32::<BigEndian>()? as usize;
         let name = str::from_utf8(&name_buf[4..name_len + 4])?;
@@ -469,6 +463,22 @@ pub struct Archive {
     pub sections: Vec<SubfileData>,
 }
 
+impl Archive {
+    fn decode_subfile(reader: &mut Cursor<&[u8]>) -> EncodingResult<SubfileData> {
+        let magic = reader.read_u8_array::<4>()?;
+        Ok(match magic {
+            Mdl0Subfile::MAGIC => SubfileData::Mdl0(Mdl0Subfile::decode(reader)?),
+            Chr0Subfile::MAGIC => SubfileData::Chr0(Chr0Subfile::decode(reader)?),
+            _ => {
+                return Err(EncodingError::InvalidFile(format!(
+                    "unknown file type encountered in child index group: {}",
+                    String::from_utf8_lossy(&magic)
+                )));
+            }
+        })
+    }
+}
+
 impl Decode for Archive {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let header = Header::decode(reader)?;
@@ -477,23 +487,25 @@ impl Decode for Archive {
         reader.set_position(header.root_offset as u64);
 
         let _root = RootSubfile::decode(reader)?;
-        let index_group = IndexGroup::decode(reader)?;
 
-        for entry in &index_group.entries[1..] {
-            // dbg!(entry);
+        // Root group, which contains folders such as AnmChr(NW4R) or AnmTexPat(NW4R).
+        let root_group = IndexGroup::decode(reader)?;
+        for folder in &root_group.entries[1..] {
+            let folder_name = root_group.get_entry_name(reader.get_ref(), folder)?;
+            tracing::trace!("Discovered folder `{folder_name}`");
 
-            let name = index_group.get_entry_name(reader.get_ref(), entry)?;
-            tracing::trace!("Found index entry `{name}`");
+            reader.set_position(root_group.get_entry_data_start(folder) as u64);
 
-            reader.set_position(index_group.get_entry_data_start(&entry) as u64);
-            let secondary_group = IndexGroup::decode(reader)?;
+            // Folder group which contains the actual subfiles.
+            let child_group = IndexGroup::decode(reader)?;
+            for file in &child_group.entries[1..] {
+                let file_name = child_group.get_entry_name(reader.get_ref(), file)?;
+                tracing::trace!("Discovered file `{folder_name}/{file_name}`");
 
-            // dbg!(&secondary_group);
-
-            let secondary_name =
-                secondary_group.get_entry_name(reader.get_ref(), &secondary_group.entries[1])?;
-
-            dbg!(secondary_name);
+                reader.set_position(child_group.get_entry_data_start(file) as u64);
+                let file = Self::decode_subfile(reader)?;
+                dbg!(file);
+            }
         }
 
         todo!()
