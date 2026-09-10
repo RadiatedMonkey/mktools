@@ -87,7 +87,7 @@ pub type Yaz0Result<T> = Result<T, Yaz0Error>;
 pub trait Decode {
     type Output;
 
-    fn decode<R: ReadBytesExt>(reader: &mut R) -> Self::Output;
+    fn decode(reader: &mut Cursor<&[u8]>) -> Self::Output;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +103,7 @@ pub struct Yaz0Header {
 impl Decode for Yaz0Header {
     type Output = Yaz0Result<Self>;
 
-    fn decode<R: ReadBytesExt>(reader: &mut R) -> Self::Output {
+    fn decode(reader: &mut Cursor<&[u8]>) -> Self::Output {
         let magic = reader.read_u8_array::<4>()?;
         if magic != YAZ0_MAGIC {
             return Err(Yaz0Error::InvalidFile(
@@ -126,51 +126,100 @@ impl Decode for Yaz0Header {
     }
 }
 
-pub struct DataGroup {
-    pub header: u8,
-}
-
-impl Decode for DataGroup {
-    type Output = Yaz0Result<Self>;
-
-    fn decode<R: ReadBytesExt>(reader: &mut R) -> Self::Output {
-        let mut header = reader.read_u8()?;
-        for _ in 0..8 {
-            // If the bit is set, the chunk is 1 byte.
-            // Otherwise it is 2 or 3 bytes
-            let bit = (header & 0x80) != 0;
-            header <<= 1;
-
-            if bit {
-            } else {
-            }
-        }
-
-        todo!()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Yaz0File {
     header: Yaz0Header,
+    uncompressed: Vec<u8>,
 }
 
 impl Decode for Yaz0File {
     type Output = Yaz0Result<Self>;
 
-    fn decode<R: ReadBytesExt>(reader: &mut R) -> Self::Output {
+    fn decode(reader: &mut Cursor<&[u8]>) -> Self::Output {
         let header = Yaz0Header::decode(reader)?;
+        let mut uncompressed = Vec::with_capacity(header.uncompressed_size as usize);
+        let compressed = &reader.get_ref()[reader.position() as usize..];
 
-        Ok(Self { header })
+        // Amount of chunks in a data group
+        const CHUNK_COUNT: usize = 8;
+
+        let mut block_count = 0;
+        while uncompressed.len() < uncompressed.capacity() {
+            let mut group_header = reader.read_u8()?;
+            for _ in 0..CHUNK_COUNT {
+                if uncompressed.len() >= uncompressed.capacity() {
+                    break;
+                }
+
+                // If the bit is set, the chunk is 1 byte.
+                // Otherwise it is 2 or 3 bytes
+                let bit = (group_header & 0x80) != 0;
+                group_header <<= 1;
+
+                if bit {
+                    // Copy over 1 byte immediately
+                    uncompressed.push(reader.read_u8()?);
+                } else {
+                    // Perform run-length decoding.
+                    // Bytes either look like
+                    // NR RR or 0R RR NN
+                    //
+                    // RRR is a value between 0x000 and 0xfff that specifies the source location of the stream.
+                    // For the first case, SIZE = N + 2 while for the second case SIZE = N + 0x12.
+                    //
+                    // A chunk may also reference itself.
+
+                    // Read first two bytes of chunk
+                    let b1 = reader.read_u8()? as usize;
+                    let b2 = reader.read_u8()? as usize;
+
+                    let rrr = (b1 & 0x0f) << 8 | b2;
+
+                    let mut n = b1 >> 4;
+                    let copy_size;
+
+                    if n == 0 {
+                        // 3 byte data, NN is at the end
+                        n = reader.read_u8()? as usize;
+                        copy_size = n + 0x12;
+                    } else {
+                        copy_size = n + 2;
+                    }
+
+                    let copy_start = uncompressed.len().checked_sub(rrr + 1).ok_or_else(|| {
+                        Yaz0Error::InvalidFile(
+                            "data group references byte before start of file".to_owned(),
+                        )
+                    })?;
+                    let copy_end = copy_start + copy_size;
+
+                    for _ in 0..copy_size {
+                        let b = uncompressed[copy_start];
+                        uncompressed.push(b);
+                    }
+
+                    block_count += 1;
+                }
+            }
+        }
+
+        dbg!(block_count);
+
+        Ok(Self {
+            header,
+            uncompressed,
+        })
     }
 }
 
 impl Yaz0File {
     pub fn read<P: AsRef<Path>>(path: P) -> Yaz0Result<Self> {
-        let mut raw_file = Cursor::new(std::fs::read(path.as_ref())?);
-        let yaz0 = Yaz0File::decode(&mut raw_file)?;
+        let raw_file = std::fs::read(path.as_ref())?;
+        let mut cursor = Cursor::new(raw_file.as_slice());
 
-        dbg!(yaz0);
+        let yaz0 = Yaz0File::decode(&mut cursor)?;
+
+        // println!("{yaz0:?}");
 
         todo!()
     }
