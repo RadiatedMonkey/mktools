@@ -12,7 +12,7 @@ pub const ARC_MAGIC: u32 = 0x55AA382D;
 
 /// See [`Custom Mario Kart Wiiki`](https://mkwiiki.org/wiki/ARC_(File_Format)) for more info.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArcHeader {
+pub struct Header {
     /// Offset to the first node in the archive.
     pub node_offset: i32,
     /// Size of all nodes including the string table.
@@ -23,7 +23,7 @@ pub struct ArcHeader {
     pub reserved: [i32; 4],
 }
 
-impl Decode for ArcHeader {
+impl Decode for Header {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let magic = reader.read_u32::<BigEndian>()?;
         if magic != ARC_MAGIC {
@@ -46,7 +46,7 @@ impl Decode for ArcHeader {
     }
 }
 
-impl Encode for ArcHeader {
+impl Encode for Header {
     fn encode_into(&self, writer: &mut Vec<u8>) -> EncodingResult<()> {
         writer.write_u32::<BigEndian>(ARC_MAGIC)?;
         writer.write_i32::<BigEndian>(self.node_offset)?;
@@ -60,32 +60,32 @@ impl Encode for ArcHeader {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
-pub enum ArcNodeType {
+enum RawNodeType {
     File,
     Directory,
 }
 
-impl Decode for ArcNodeType {
+impl Decode for RawNodeType {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let b = reader.read_u8()?;
         Self::try_from(b)
     }
 }
 
-impl Encode for ArcNodeType {
+impl Encode for RawNodeType {
     fn encode_into(&self, writer: &mut Vec<u8>) -> EncodingResult<()> {
         writer.write_u8(*self as u8)?;
         Ok(())
     }
 }
 
-impl TryFrom<u8> for ArcNodeType {
+impl TryFrom<u8> for RawNodeType {
     type Error = EncodingError;
 
     fn try_from(value: u8) -> EncodingResult<Self> {
         Ok(match value {
-            0 => ArcNodeType::File,
-            1 => ArcNodeType::Directory,
+            0 => RawNodeType::File,
+            1 => RawNodeType::Directory,
             v => {
                 return Err(EncodingError::InvalidFile(format!(
                     "arc node type is expected to be either 0 (file) or 1 (directory), got {v}"
@@ -96,12 +96,13 @@ impl TryFrom<u8> for ArcNodeType {
 }
 
 /// Exact size of a single ARC node.
-pub const ARC_NODE_SIZE: usize = 0x0c;
+const ARC_NODE_SIZE: usize = 0x0c;
 
+/// Raw ARC node directly from the ARC file.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArcNode {
+struct RawNode {
     /// The type this node is.
-    pub ty: ArcNodeType,
+    pub ty: RawNodeType,
     /// Offset into the string pool for the file name.
     pub pool_offset: u32,
     /// Data content depends on the node type:
@@ -114,19 +115,15 @@ pub struct ArcNode {
     pub data2: u32,
 }
 
-impl ArcNode {
-    pub fn get_node_name<'pool>(&self, string_pool: &'pool [u8]) -> EncodingResult<&'pool str> {
+impl RawNode {
+    pub fn get_name_from_pool<'pool>(
+        &self,
+        string_pool: &'pool [u8],
+    ) -> EncodingResult<&'pool str> {
         let null_pos = string_pool[self.pool_offset as usize..]
             .iter()
             .position(|&b| b == 0x00)
             .unwrap_or(string_pool.len() - self.pool_offset as usize);
-
-        dbg!(self.pool_offset);
-        dbg!(null_pos);
-
-        dbg!(String::from_utf8_lossy(
-            &string_pool[self.pool_offset as usize..self.pool_offset as usize + null_pos]
-        ));
 
         Ok(str::from_utf8(
             &string_pool[self.pool_offset as usize..self.pool_offset as usize + null_pos],
@@ -134,7 +131,7 @@ impl ArcNode {
     }
 }
 
-impl Encode for ArcNode {
+impl Encode for RawNode {
     fn encode_into(&self, writer: &mut Vec<u8>) -> EncodingResult<()> {
         self.ty.encode_into(writer)?;
         writer.write_u24::<BigEndian>(self.pool_offset)?;
@@ -145,20 +142,10 @@ impl Encode for ArcNode {
     }
 }
 
-impl Decode for ArcNode {
+impl Decode for RawNode {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
-        println!(
-            "{:?}",
-            &reader.get_ref()
-                [reader.position() as usize..reader.position() as usize + ARC_NODE_SIZE]
-        );
-
-        let ty = ArcNodeType::decode(reader)?;
-
-        // dbg!(&reader.get_ref()[reader.position() as usize..reader.position() as usize + 3]);
+        let ty = RawNodeType::decode(reader)?;
         let pool_offset = reader.read_u24::<BigEndian>()?;
-        dbg!(pool_offset);
-
         let data1 = reader.read_u32::<BigEndian>()?;
         let data2 = reader.read_u32::<BigEndian>()?;
 
@@ -172,42 +159,90 @@ impl Decode for ArcNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArcFile {
-    pub header: ArcHeader,
-    pub nodes: Vec<ArcNode>,
+pub enum NodeType {
+    File {
+        /// Size of the file in bytes.
+        size: u32,
+        content: Vec<u8>,
+    },
+    Directory {
+        /// Index of the parent directory.
+        parent: u32,
+        /// Index of the first node that is not part of this directory.
+        skip_node: u32,
+    },
 }
 
-impl ArcFile {}
+/// Processed ARC node that now includes its name and other properties.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Node {
+    pub name: String,
+    pub data: NodeType,
+}
 
-impl Decode for ArcFile {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Archive {
+    pub header: Header,
+    pub nodes: Vec<Node>,
+}
+
+impl Decode for Archive {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
-        let header = ArcHeader::decode(reader)?;
-        let root_node = ArcNode::decode(reader)?;
+        let header = Header::decode(reader)?;
+        let root_node = RawNode::decode(reader)?;
         let node_count = root_node.data2;
-        dbg!(node_count);
+        tracing::trace!("Decoding {node_count} ARC nodes");
 
+        // The string pool starts right after the last node.
         let spool_start = header.node_offset as usize + ARC_NODE_SIZE * node_count as usize;
         let spool_end = header.node_offset as usize + header.size as usize;
         let spool = &reader.get_ref()[spool_start..spool_end];
 
-        dbg!(spool_start, spool_end);
-
-        dbg!(root_node.get_node_name(spool)?);
-
-        let mut nodes = Vec::with_capacity(node_count as usize);
-        nodes.push(root_node);
+        let mut raw_nodes = Vec::with_capacity(node_count as usize);
+        raw_nodes.push(root_node);
 
         for _ in 1..node_count {
-            let start_pos = reader.position();
-
-            let node = ArcNode::decode(reader)?;
-            // dbg!(node.get_node_name(spool)?);
-
-            nodes.push(node);
-
-            let end_pos = reader.position();
-            println!("read {}", end_pos - start_pos);
+            let node = RawNode::decode(reader)?;
+            raw_nodes.push(node);
         }
+
+        tracing::trace!("Loading ARC node names and content...");
+
+        // Process all nodes to find their data and names.
+        let mut nodes = Vec::with_capacity(raw_nodes.len());
+        for raw_node in raw_nodes {
+            let name = raw_node.get_name_from_pool(spool)?.to_owned();
+
+            let reader_buf = reader.get_ref();
+            let data = match raw_node.ty {
+                RawNodeType::File => {
+                    let data_start = raw_node.data1 as usize;
+                    let data_end = data_start + raw_node.data2 as usize;
+
+                    if data_end > reader_buf.len() {
+                        return Err(EncodingError::InvalidFile(format!(
+                            "file node data range {data_start}..{data_end} exceeds file length {}",
+                            reader_buf.len()
+                        )));
+                    }
+
+                    dbg!(data_end, raw_node.data2);
+
+                    NodeType::File {
+                        content: reader_buf[data_start..data_end].to_owned(),
+                        size: raw_node.data2,
+                    }
+                }
+                RawNodeType::Directory => NodeType::Directory {
+                    parent: raw_node.data1,
+                    skip_node: raw_node.data2,
+                },
+            };
+
+            nodes.push(Node { name, data })
+        }
+
+        tracing::trace!("Successfully loaded node names and contents");
 
         Ok(Self { header, nodes })
     }

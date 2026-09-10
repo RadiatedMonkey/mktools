@@ -1,4 +1,4 @@
-use std::{io::Cursor, path::Path};
+use std::io::Cursor;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
@@ -6,17 +6,17 @@ use crate::encoding::{Decode, Encode, ReadArrayExt, WriteArrayExt};
 use crate::error::{EncodingError, EncodingResult};
 
 /// Magic of a YAZ0 file.
-pub const YAZ0_MAGIC: [u8; 4] = [0x59, 0x61, 0x7a, 0x30];
+const YAZ0_MAGIC: [u8; 4] = [0x59, 0x61, 0x7a, 0x30];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Yaz0Header {
+pub struct Header {
     /// Size in bytes of the uncompressed file.
     pub uncompressed_size: u32,
     /// Reserved for special use. Always 0 in Mario Kart Wii.
     pub reserved: [u32; 2],
 }
 
-impl Encode for Yaz0Header {
+impl Encode for Header {
     fn encode_into(&self, writer: &mut Vec<u8>) -> EncodingResult<()> {
         writer.write_u8_array::<4>(YAZ0_MAGIC)?;
         writer.write_u32::<BigEndian>(self.uncompressed_size)?;
@@ -26,7 +26,7 @@ impl Encode for Yaz0Header {
     }
 }
 
-impl Decode for Yaz0Header {
+impl Decode for Header {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let magic = reader.read_u8_array::<4>()?;
         if magic != YAZ0_MAGIC {
@@ -86,14 +86,21 @@ pub fn compress_yaz0(uncompressed: &[u8]) -> Vec<u8> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Yaz0File {
     /// See [`Yaz0Header`] for the binary format of the header.
-    pub header: Yaz0Header,
+    pub header: Header,
     /// The uncompressed output stream.
     pub uncompressed: Vec<u8>,
 }
 
 impl Decode for Yaz0File {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
-        let header = Yaz0Header::decode(reader)?;
+        let header = Header::decode(reader)?;
+
+        tracing::trace!(
+            "Decompressing Yaz0 archive ({} -> {})",
+            reader.get_ref().len(),
+            header.uncompressed_size
+        );
+
         let mut uncompressed = Vec::with_capacity(header.uncompressed_size as usize);
 
         // Amount of chunks in a data group
@@ -154,6 +161,17 @@ impl Decode for Yaz0File {
                 }
             }
         }
+
+        dbg!(uncompressed.len(), header.uncompressed_size);
+        if uncompressed.len() != header.uncompressed_size as usize {
+            return Err(EncodingError::InvalidFile(format!(
+                "uncompressed size in header does not equal actual size ({} vs. {})",
+                header.uncompressed_size,
+                uncompressed.len()
+            )));
+        }
+
+        tracing::trace!("Successfully decompressed Yaz0 archive");
 
         Ok(Self {
             header,
