@@ -4,7 +4,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 
 use crate::{
     brres::{IndexGroup, IndexGroupEntry, Subfile, SubfileHeader, SubfileType},
-    encoding::Decode,
+    encoding::{Decode, ReadStringExt},
     error::{EncodingError, EncodingResult},
 };
 
@@ -219,27 +219,157 @@ apply_masks! {
     use_identity
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnimationData {}
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScaleType {
+    Fixed(f32),
+}
 
-impl Decode for AnimationData {
-    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
-        let bone_name_offset = reader.read_u32::<BigEndian>()?;
-        let anim_ty_code = AnimationTypeCode::decode(reader)?;
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScaleData {
+    pub x: ScaleType,
+    pub y: ScaleType,
+    pub z: ScaleType,
+}
 
-        dbg!(anim_ty_code);
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimationData {
+    pub scale: Option<ScaleData>,
+}
 
-        todo!("animation data after animation type code");
+impl AnimationData {
+    pub fn decode(
+        reader: &mut Cursor<&[u8]>,
+        anim_ty_code: &AnimationTypeCode,
+    ) -> EncodingResult<Self> {
+        let mut scale = None;
+        if anim_ty_code.has_scale {
+            let z_scale;
+            if anim_ty_code.scale_z_fixed {
+                z_scale = ScaleType::Fixed(reader.read_f32::<BigEndian>()?);
+            } else {
+                todo!()
+            }
+
+            dbg!(&z_scale);
+
+            let y_scale;
+            if anim_ty_code.scale_y_fixed {
+                y_scale = ScaleType::Fixed(reader.read_f32::<BigEndian>()?);
+            } else {
+                todo!()
+            }
+
+            dbg!(&y_scale);
+
+            let x_scale;
+            if anim_ty_code.scale_x_fixed {
+                x_scale = ScaleType::Fixed(reader.read_f32::<BigEndian>()?);
+            } else {
+                todo!()
+            }
+
+            dbg!(&z_scale);
+
+            scale = Some(ScaleData {
+                x: x_scale,
+                y: y_scale,
+                z: z_scale,
+            });
+        }
+
+        dbg!(&scale);
+
+        if anim_ty_code.has_rotation {}
+
+        if anim_ty_code.has_translation {}
+
+        // If a component is fixed, the current float is simply the value for the bone.
+        Ok(AnimationData { scale })
     }
 }
 
+const IDENTITY_SCALE_MASK: u32 = 0x00000001;
+const IDENTITY_ROTATION_MASK: u32 = 0x00000002;
+const IDENTITY_TRANSLATION_MASK: u32 = 0x00000004;
+const UNIFORM_SCALE_MASK: u32 = 0x00000008;
+const CONSTANT_SCALE_MASK: u32 = 0x00000010;
+const CONSTANT_ROTATION_MASK: u32 = 0x00000020;
+const CONSTANT_TRANSLATION_MASK: u32 = 0x00000040;
+const CURVE_INTERPOLATION_MASK: u32 = 0x00000080;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnimationFlags {
+    pub identity_scale: bool,
+    pub identity_rotation: bool,
+    pub identity_translation: bool,
+    pub uniform_scale: bool,
+    pub constant_scale: bool,
+    pub constant_rotation: bool,
+    pub constant_translation: bool,
+    /// Set when Hermes/Bezier tangents need step-evaluation instead of linear blending.
+    pub curve_interpolation: bool,
+}
+
+impl Decode for AnimationFlags {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let flags = reader.read_u32::<BigEndian>()?;
+
+        let identity_scale = (flags & IDENTITY_SCALE_MASK) == IDENTITY_SCALE_MASK;
+        let identity_rotation = (flags & IDENTITY_ROTATION_MASK) == IDENTITY_ROTATION_MASK;
+        let identity_translation = (flags & IDENTITY_TRANSLATION_MASK) == IDENTITY_TRANSLATION_MASK;
+        let uniform_scale = (flags & UNIFORM_SCALE_MASK) == UNIFORM_SCALE_MASK;
+        let constant_scale = (flags & CONSTANT_SCALE_MASK) == CONSTANT_SCALE_MASK;
+        let constant_rotation = (flags & CONSTANT_ROTATION_MASK) == CONSTANT_ROTATION_MASK;
+        let constant_translation = (flags & CONSTANT_TRANSLATION_MASK) == CONSTANT_TRANSLATION_MASK;
+        let curve_interpolation = (flags & CURVE_INTERPOLATION_MASK) == CURVE_INTERPOLATION_MASK;
+
+        Ok(Self {
+            identity_scale,
+            identity_rotation,
+            identity_translation,
+            uniform_scale,
+            constant_scale,
+            constant_rotation,
+            constant_translation,
+            curve_interpolation,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Chr0Bone {
+    pub name: String,
+    pub anim_ty_code: AnimationTypeCode,
+    pub anim_flags: AnimationFlags,
+    pub anim_data: AnimationData,
+}
+
+impl Chr0Bone {
+    pub fn decode(reader: &mut Cursor<&[u8]>, name: &str) -> EncodingResult<Self> {
+        // Points to the same string as the file name in the index group entry,
+        // so we don't need it.
+        let _bone_name_offset = reader.read_u32::<BigEndian>()?;
+        let anim_ty_code = AnimationTypeCode::decode(reader)?;
+        let anim_flags = AnimationFlags::decode(reader)?;
+        let anim_data = AnimationData::decode(reader, &anim_ty_code)?;
+
+        Ok(Self {
+            name: name.to_owned(),
+            anim_ty_code,
+            anim_flags,
+            anim_data,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Chr0Subfile {
     pub subfile_header: SubfileHeader,
     pub chr0_header: Chr0Header,
-    pub animation_data: AnimationData,
-
-    pub index_group: IndexGroup,
+    /// Per-bone animation data.
+    pub bones: Vec<Chr0Bone>,
+    /// This index group lists all the individual bones in the CHR0 file.
+    pub bones_group: IndexGroup,
 }
 
 impl Chr0Subfile {
@@ -252,23 +382,26 @@ impl Chr0Subfile {
         let chr0_header = Chr0Header::decode(reader)?;
 
         // This subgroup references all the bones in the animation file.
-        let subgroup = IndexGroup::decode(reader)?;
-        dbg!(&subgroup);
+        let bones_group = IndexGroup::decode(reader)?;
+        let mut bones = Vec::with_capacity(bones_group.entries.len());
 
-        for entry in &subgroup.entries {
-            let name = subgroup.get_entry_name(reader.get_ref(), entry)?;
+        for entry in &bones_group.entries {
+            let name = bones_group.get_entry_name(reader.get_ref(), entry)?;
             dbg!(name);
 
-            let data = subgroup.get_entry_data_start(entry);
+            let data = bones_group.get_entry_data_start(entry);
             reader.set_position(data as u64);
 
-            let bone_name_offset = reader.read_u32::<BigEndian>()?;
-
-            let animation_ty_code = AnimationTypeCode::decode(reader)?;
-            dbg!(animation_ty_code);
+            bones.push(Chr0Bone::decode(reader, name)?);
+            dbg!(bones.last().unwrap());
         }
 
-        todo!();
+        Ok(Self {
+            subfile_header,
+            chr0_header,
+            bones_group,
+            bones,
+        })
     }
 }
 

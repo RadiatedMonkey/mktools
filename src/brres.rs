@@ -194,7 +194,7 @@ macro_rules! impl_subfile_enum {
                 $($ty),*
             }
 
-            #[derive(Debug, Clone, PartialEq, Eq)]
+            #[derive(Debug, Clone, PartialEq)]
             pub enum SubfileData {
                 $($ty([< $ty Subfile >])),*
             }
@@ -364,7 +364,7 @@ impl Encode for IndexGroup {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Archive {
     pub sections: Vec<SubfileData>,
 }
