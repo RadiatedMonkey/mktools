@@ -241,9 +241,31 @@ pub enum ComponentType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Frame4Info {
-    pub index: f32,
+    pub index: u8,
     pub step: f32,
     pub tangent: f32,
+}
+
+impl Frame4Info {
+    pub const INDEX_MASK: u32 = 0xff000000;
+    pub const STEP_MASK: u32 = 0x00fff000;
+    pub const TANGENT_MASK: u32 = 0x00000fff;
+}
+
+impl Decode for Frame4Info {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let frame_info = reader.read_u32::<BigEndian>()?;
+
+        let index = ((frame_info & Self::INDEX_MASK) >> 24) as u8;
+        let step = ((frame_info & Self::STEP_MASK) >> 12) as f32;
+        let tangent = (frame_info & Self::TANGENT_MASK) as f32;
+
+        Ok(Self {
+            index,
+            step,
+            tangent,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -266,6 +288,30 @@ pub struct Interpolated4Frame {
     pub step: f32,
     pub base: f32,
     pub frame_info: Vec<Frame4Info>,
+}
+
+impl Decode for Interpolated4Frame {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let frame_count = reader.read_u16::<BigEndian>()?;
+        tracing::trace!("Reading {frame_count} I4 frames");
+
+        let _unknown1 = reader.read_u16::<BigEndian>()?;
+        let frame_scale = reader.read_f32::<BigEndian>()?;
+        let step = reader.read_f32::<BigEndian>()?;
+        let base = reader.read_f32::<BigEndian>()?;
+
+        let mut frame_info = Vec::with_capacity(frame_count as usize);
+        for _ in 0..frame_count {
+            frame_info.push(Frame4Info::decode(reader)?);
+        }
+
+        Ok(Self {
+            frame_scale,
+            step,
+            base,
+            frame_info,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -328,7 +374,12 @@ impl AnimationData {
 
         reader.set_position(frame_start as u64);
 
-        todo!()
+        Ok(match format {
+            AnimationFormat::Interpolated4 => {
+                AnimationFrames::Interpolated4(Interpolated4Frame::decode(reader)?)
+            }
+            _ => todo!(),
+        })
     }
 
     fn decode_scale(
@@ -445,6 +496,8 @@ impl AnimationData {
             if anim_ty_code.rotation_y_fixed {
                 y_rot = ComponentType::Fixed(reader.read_f32::<BigEndian>()?);
             } else {
+                todo!("Seems like the frame info offset read in decode_anim_frame is incorrect");
+
                 let frame =
                     Self::decode_anim_frame(reader, subfile_header, anim_ty_code.rotation_format)?;
                 y_rot = ComponentType::Animated(frame);
@@ -578,8 +631,6 @@ impl Chr0Bone {
         // so we don't need it.
         let _bone_name_offset = reader.read_u32::<BigEndian>()?;
         let anim_ty_code = AnimationTypeCode::decode(reader)?;
-        dbg!(&anim_ty_code);
-
         let anim_flags = AnimationFlags::decode(reader)?;
         let anim_data = AnimationData::decode(reader, subfile_header, &anim_ty_code)?;
 
