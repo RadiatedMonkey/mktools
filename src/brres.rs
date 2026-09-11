@@ -260,13 +260,44 @@ impl Decode for Chr0Header {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnimationTypeCode {
-
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum AnimationFormat {
+    Interpolated4 = 0b001,
+    Interpolated6 = 0b010,
+    Interpolated12 = 0b011,
+    Linear1 = 0b100,
+    Linear4 = 0b110,
 }
 
-const TRANSLATION_FORMAT_MASK: u32 = 0xc0000000; // Bits 31-30
-const ROTATION_FORMAT_MASK: u32 = 0x38000000; // Bits
+impl AnimationFormat {
+    pub fn is_linear(&self) -> bool {
+        const LINEAR_MASK: u8 = 0b100;
+        (*self as u8) & LINEAR_MASK != 0
+    }
+}
+
+impl TryFrom<u8> for AnimationFormat {
+    type Error = EncodingError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Ok(match value {
+            0b001 => Self::Interpolated4,
+            0b010 => Self::Interpolated6,
+            0b011 => Self::Interpolated12,
+            0b100 => Self::Linear1,
+            0b110 => Self::Linear4,
+            _ => {
+                return Err(EncodingError::InvalidFile(format!(
+                    "invalid animation format: {value:#b}"
+                )));
+            }
+        })
+    }
+}
+
+const TRANSLATION_FORMAT_MASK: u32 = 0xc0000000; // Bits 32-31
+const ROTATION_FORMAT_MASK: u32 = 0x38000000; // Bits 30-28
 const SCALE_FORMAT_MASK: u32 = 0x06000000; // Bits 27-26
 const HAS_TRANSLATION_MASK: u32 = 0x01000000; // Bit 25
 const HAS_ROTATION_MASK: u32 = 0x00800000; // Bit 24
@@ -282,7 +313,7 @@ const SCALE_Y_FIXED_MASK: u32 = 0x00004000; // Bit 15
 const SCALE_X_FIXED_MASK: u32 = 0x00002000; // Bit 14
 const DISABLE_CLASSIC_SCALE_MASK: u32 = 0x00001000; // Bit 13
 const APPLY_CHILD_SCALE_COMPENSATE_MASK: u32 = 0x00000800; // Bit 12
-const APPLY_SCALE_COMPENSATE: u32 = 0x00000400; // Bit 11
+const APPLY_SCALE_COMPENSATE_MASK: u32 = 0x00000400; // Bit 11
 const USE_MODEL_TRANSLATION_MASK: u32 = 0x00000200; // Bit 10
 const USE_MODEL_ROTATION_MASK: u32 = 0x00000100; // Bit 9
 const USE_MODEL_SCALE_MASK: u32 = 0x00000080; // Bit 8
@@ -290,15 +321,68 @@ const TRANSLATION_ISOTROPIC_MASK: u32 = 0x00000040; // Bit 7
 const ROTATION_ISOTROPIC_MASK: u32 = 0x0000020; // Bit 6
 const SCALE_UNIFORM_MASK: u32 = 0x00000010; // Bit 5
 const SCALE_ISOTROPIC_MASK: u32 = 0x00000008; // Bit 4
-const ROTATION_TRANSLATION_ISTROPIC_MASK: u32 = 0x00000004; // Bit 3
+const ROTATION_TRANSLATION_ISOTROPIC_MASK: u32 = 0x00000004; // Bit 3
 const USE_IDENTITY_MASK: u32 = 0x00000002; // Bit 2
 
-impl TryFrom<u32> for AnimationTypeCode {
-    type Error = EncodingError;
+macro_rules! apply_masks {
+    ($($x:ident),*) => {
+        paste::paste! {
+            #[derive(Debug, Clone, PartialEq, Eq)]
+            pub struct AnimationTypeCode {
+                pub translation_format: u8,
+                pub rotation_format: u8,
+                pub scale_format: u8,
+                $(pub $x: bool),*
+            }
 
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        let translation_format =
+            impl AnimationTypeCode {
+                fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+                    let flags = reader.read_u32::<BigEndian>()?;
+                    Ok(Self::from(flags))
+                }
+            }
+
+            impl From<u32> for AnimationTypeCode {
+                fn from(v: u32) -> Self {
+                    Self {
+                        translation_format: ((v & TRANSLATION_FORMAT_MASK) >> 30) as u8,
+                        rotation_format: ((v & ROTATION_FORMAT_MASK) >> 27) as u8,
+                        scale_format: ((v & SCALE_FORMAT_MASK) >> 25) as u8,
+                        $(
+                            $x: (v & [<$x:upper _MASK>]) == [<$x:upper _MASK>]
+                        ),*
+                    }
+                }
+            }
+        }
     }
+}
+
+apply_masks! {
+    has_translation,
+    has_rotation,
+    has_scale,
+    z_fixed,
+    y_fixed,
+    x_fixed,
+    rotation_z_fixed,
+    rotation_y_fixed,
+    rotation_x_fixed,
+    scale_z_fixed,
+    scale_y_fixed,
+    scale_x_fixed,
+    disable_classic_scale,
+    apply_child_scale_compensate,
+    apply_scale_compensate,
+    use_model_translation,
+    use_model_rotation,
+    use_model_scale,
+    translation_isotropic,
+    rotation_isotropic,
+    scale_uniform,
+    scale_isotropic,
+    rotation_translation_isotropic,
+    use_identity
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,9 +391,11 @@ pub struct AnimationData {}
 impl Decode for AnimationData {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let bone_name_offset = reader.read_u32::<BigEndian>()?;
-        let anim_ty_code = reader.read_u32::<BigEndian>()?;
+        let anim_ty_code = AnimationTypeCode::decode(reader)?;
 
+        dbg!(anim_ty_code);
 
+        todo!("animation data after animation type code");
     }
 }
 
@@ -524,11 +610,14 @@ pub struct Archive {
 }
 
 impl Archive {
-    fn decode_subfile(reader: &mut Cursor<&[u8]>) -> EncodingResult<SubfileData> {
+    fn decode_subfile(
+        index: &IndexGroupEntry,
+        reader: &mut Cursor<&[u8]>,
+    ) -> EncodingResult<SubfileData> {
         let magic = reader.read_u8_array::<4>()?;
         Ok(match magic {
             Mdl0Subfile::MAGIC => SubfileData::Mdl0(Mdl0Subfile::decode(reader)?),
-            Chr0Subfile::MAGIC => SubfileData::Chr0(Chr0Subfile::decode(reader)?),
+            Chr0Subfile::MAGIC => SubfileData::Chr0(Chr0Subfile::decode(index, reader)?),
             _ => {
                 return Err(EncodingError::InvalidFile(format!(
                     "unknown file type encountered in child index group: {}",
@@ -565,7 +654,7 @@ impl Decode for Archive {
                 reader.set_position(child_group.get_entry_data_start(file) as u64);
                 dbg!(reader.position());
 
-                let file = Self::decode_subfile(reader)?;
+                let file = Self::decode_subfile(file, reader)?;
                 dbg!(file);
             }
         }
