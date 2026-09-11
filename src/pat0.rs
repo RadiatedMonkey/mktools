@@ -3,8 +3,8 @@ use std::io::Cursor;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::{
-    brres::{IndexGroupEntry, Subfile, SubfileHeader, SubfileType},
-    encoding::{Decode, Encode},
+    brres::{IndexGroup, IndexGroupEntry, Subfile, SubfileHeader, SubfileType},
+    encoding::{Decode, Encode, ReadStringExt},
     error::EncodingResult,
 };
 
@@ -83,23 +83,26 @@ pub struct Pat0Subfile {
     pub pat0_header: Pat0Header,
 }
 
-impl Pat0Subfile {
-    pub fn decode(group: &IndexGroupEntry, reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+impl Decode for Pat0Subfile {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let subfile_header = SubfileHeader::decode(reader, SubfileType::Pat0)?;
         let pat0_header = Pat0Header::decode(reader)?;
 
-        // Section #1 and #3 are offsets
-        reader.set_position(subfile_header.get_section_start(1)? as u64);
-        let string_list = U32Section::decode(reader, pat0_header.string_number)?;
+        let mut name_start = Cursor::new(
+            &reader.get_ref()
+                [subfile_header.header_start as usize + subfile_header.name_offset as usize..],
+        );
 
-        dbg!(string_list);
+        let pat0_name = name_start.read_null_str::<BigEndian>()?;
+        dbg!(pat0_name);
 
-        reader.set_position(subfile_header.get_section_start(3)? as u64);
-        let string_attribs = U32Section::decode(reader, pat0_header.string_number)?;
+        dbg!(&subfile_header, pat0_header);
 
-        dbg!(string_attribs);
+        let index_group = IndexGroup::decode(reader)?;
+        let name = index_group.get_entry_name(reader.get_ref(), &index_group.entries[1])?;
+        dbg!(name);
 
-        todo!()
+        todo!();
     }
 }
 

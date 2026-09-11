@@ -165,13 +165,15 @@ pub struct SubfileHeader {
     /// The number can be obtained using the [`get_section_count`] function.
     pub offsets: Vec<i32>,
     /// String offset to the name of this subfile.
-    /// This offset is from the start of the BRRES file.
+    /// This offset is relative to [`header_start`](Self::header_start).
+    ///
+    /// Note that the offset points to the start of the string data, the length prefix is 4 bytes ahead of it.
     pub name_offset: i32,
 }
 
 impl SubfileHeader {
     pub fn decode(reader: &mut Cursor<&[u8]>, ty: SubfileType) -> EncodingResult<Self> {
-        let header_start = reader.position() as u32;
+        let header_start = reader.position() as u32 - 4; // Subtract 4 for magic.
         let subfile_length = reader.read_u32::<BigEndian>()?;
         let subfile_version = reader.read_u32::<BigEndian>()?;
         let brres_offset = reader.read_i32::<BigEndian>()?;
@@ -412,7 +414,7 @@ impl Archive {
         let magic = reader.read_u8_array::<4>()?;
         Ok(match magic {
             Mdl0Subfile::MAGIC => SubfileData::Mdl0(Mdl0Subfile::decode(reader)?),
-            Pat0Subfile::MAGIC => SubfileData::Pat0(Pat0Subfile::decode(index, reader)?),
+            Pat0Subfile::MAGIC => SubfileData::Pat0(Pat0Subfile::decode(reader)?),
             Chr0Subfile::MAGIC => SubfileData::Chr0(Chr0Subfile::decode(reader)?),
             _ => {
                 return Err(UnsupportedError {
@@ -438,7 +440,7 @@ impl Decode for Archive {
         let root_group = IndexGroup::decode(reader)?;
 
         let mut folders = Vec::with_capacity(root_group.entries.len() - 1);
-        for folder in &root_group.entries[1..2] {
+        for folder in &root_group.entries[1..] {
             let folder_name = root_group.get_entry_name(reader.get_ref(), folder)?;
 
             tracing::trace!(

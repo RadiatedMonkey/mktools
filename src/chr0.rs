@@ -434,12 +434,14 @@ impl L1Animation {
             reader.position()
         );
 
+        // reader.set_position(reader.position() - 4);
+
         let step = reader.read_f32::<BigEndian>()?;
         let base = reader.read_f32::<BigEndian>()?;
 
         let mut frames = Vec::with_capacity(header_frame_count as usize);
         for _ in 0..header_frame_count {
-            frames.push(reader.read_i8()? as f32);
+            frames.push(reader.read_u8()? as f32);
         }
 
         Ok(Self { step, base, frames })
@@ -482,8 +484,8 @@ impl AnimationData {
         format: AnimationFormat,
     ) -> EncodingResult<AnimationType> {
         let orig_position = reader.position();
-        let frame_offset = reader.read_i32::<BigEndian>()? as i64;
 
+        let frame_offset = reader.read_i32::<BigEndian>()? as i64;
         let frame_start = bone_data_start as i64 + frame_offset;
         reader.set_position(frame_start as u64);
 
@@ -498,8 +500,9 @@ impl AnimationData {
                 AnimationType::Interpolated12(I12Animation::decode(reader)?)
             }
             AnimationFormat::Linear1 => {
-                let l1 = AnimationType::Linear1(L1Animation::decode(reader, header_frame_count)?);
-                l1
+                // Does Brawlcrate simply just display them differently?
+                tracing::error!("FIXME: LINEAR1 ANIMATIONS DO NOT WORK PROPERLY RIGHT NOW");
+                AnimationType::Linear1(L1Animation::decode(reader, header_frame_count)?)
             }
             _ => todo!("animation frame format {format:?}"),
         };
@@ -821,6 +824,9 @@ impl AnimatedBone {
     }
 }
 
+/// A CHR0 subfile stores character model animations.
+///
+/// These animations are based on the bones of the character.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chr0Subfile {
     /// General header for BRRES subfiles.
@@ -833,8 +839,8 @@ pub struct Chr0Subfile {
     pub bones_group: IndexGroup,
 }
 
-impl Chr0Subfile {
-    pub fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+impl Decode for Chr0Subfile {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let subfile_header = SubfileHeader::decode(reader, SubfileType::Chr0)?;
 
         reader.set_position(reader.position() + 4); // there are 4 bytes of padding between the headers
