@@ -449,7 +449,9 @@ impl Decode for Archive {
                     "Reading `{folder_name}/{file_name}` data section at location {}",
                     reader.position()
                 );
-                let file = Self::decode_subfile(reader, file)?;
+
+                let file = tracing::trace_span!("decode_subfile", %folder_name, %file_name)
+                    .in_scope(|| Self::decode_subfile(reader, file))?;
             }
         }
 

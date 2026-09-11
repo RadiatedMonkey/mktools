@@ -1,5 +1,7 @@
 #![feature(error_generic_member_access)]
 
+use tracing_subscriber::layer::SubscriberExt;
+
 pub mod arc;
 pub mod brres;
 pub mod chr0;
@@ -11,22 +13,28 @@ pub mod yaz0;
 
 fn setup_tracing() {
     color_eyre::config::HookBuilder::new()
-        .panic_section("boop")
-        .add_frame_filter(Box::new(|frames| {
-            let mut index = 0;
-            frames.retain(|frame| {
-                println!("{:?}", frame.name);
-                true
-            })
-        }))
+        .panic_section("report this issue at https://github.com/RadiatedMonkey/mktools")
+        // .issue_url("https://github.com/RadiatedMonkey/mktools/issues/new")
+        // .add_issue_metadata("version", "v0.1.0")
+        .display_location_section(true)
+        .display_env_section(true)
         .install()
         .unwrap();
 
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_file(true)
-        .with_line_number(true)
-        .init();
+    // tracing_subscriber::fmt()
+    //     .with_max_level(tracing::Level::TRACE)
+    //     .with_file(true)
+    //     .with_line_number(true)
+    //     .compact()
+    //     .init();
+
+    let layer = tracing_tree::HierarchicalLayer::new(2)
+        .with_indent_lines(true)
+        .with_targets(true)
+        .with_bracketed_fields(true);
+
+    let subscriber = tracing_subscriber::Registry::default().with(layer);
+    tracing::subscriber::set_global_default(subscriber).unwrap();
 }
 
 #[cfg(test)]

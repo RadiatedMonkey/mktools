@@ -307,6 +307,20 @@ pub struct Frame12Info {
     pub tangent: f32,
 }
 
+impl Decode for Frame12Info {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let index = reader.read_f32::<BigEndian>()?;
+        let value = reader.read_f32::<BigEndian>()?;
+        let tangent = reader.read_f32::<BigEndian>()?;
+
+        Ok(Self {
+            index,
+            value,
+            tangent,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Interpolated4Frame {
     pub frame_scale: f32,
@@ -353,6 +367,11 @@ pub struct Interpolated6Frame {
 impl Decode for Interpolated6Frame {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let frame_count = reader.read_u16::<BigEndian>()?;
+        tracing::trace!(
+            "Reading {frame_count} I6 frames at location {}",
+            reader.position()
+        );
+
         let _unknown1 = reader.read_u16::<BigEndian>()?;
         let frame_scale = reader.read_f32::<BigEndian>()?;
         let step = reader.read_f32::<BigEndian>()?;
@@ -375,7 +394,30 @@ impl Decode for Interpolated6Frame {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Interpolated12Frame {
     pub frame_scale: f32,
-    pub frame_info: Vec<Frame12Info>,
+    pub frames: Vec<Frame12Info>,
+}
+
+impl Decode for Interpolated12Frame {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let frame_count = reader.read_u16::<BigEndian>()?;
+        tracing::trace!(
+            "Reading {frame_count} I12 frames at location {}",
+            reader.position()
+        );
+
+        let _unknown1 = reader.read_u16::<BigEndian>()?;
+        let frame_scale = reader.read_f32::<BigEndian>()?;
+
+        let mut frames = Vec::with_capacity(frame_count as usize);
+        for _ in 0..frame_count {
+            frames.push(Frame12Info::decode(reader)?);
+        }
+
+        Ok(Self {
+            frame_scale,
+            frames,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -423,14 +465,15 @@ impl AnimationData {
         let frame_start = bone_data_start as i64 + frame_offset;
         reader.set_position(frame_start as u64);
 
-        dbg!(frame_start);
-
         let frames = match format {
             AnimationFormat::Interpolated4 => {
                 AnimationFrames::Interpolated4(Interpolated4Frame::decode(reader)?)
             }
             AnimationFormat::Interpolated6 => {
                 AnimationFrames::Interpolated6(Interpolated6Frame::decode(reader)?)
+            }
+            AnimationFormat::Interpolated12 => {
+                AnimationFrames::Interpolated12(Interpolated12Frame::decode(reader)?)
             }
             _ => todo!("animation frame format {format:?}"),
         };
@@ -445,7 +488,7 @@ impl AnimationData {
         anim_ty_code: &AnimationCode,
     ) -> EncodingResult<ComponentData> {
         tracing::trace!(
-            "Decoding scale animations (iso: {}, x fixed: {}, y fixed: {}, z fixed: {})",
+            "Reading scale animations (iso: {}, x fixed: {}, y fixed: {}, z fixed: {})",
             anim_ty_code.scale_isotropic,
             anim_ty_code.scale_x_fixed,
             anim_ty_code.scale_y_fixed,
@@ -479,8 +522,6 @@ impl AnimationData {
                 x_scale = ComponentType::Animated(frame);
             }
 
-            dbg!(&x_scale);
-
             let y_scale;
             if anim_ty_code.scale_y_fixed {
                 y_scale = ComponentType::Fixed(reader.read_f32::<BigEndian>()?);
@@ -490,8 +531,6 @@ impl AnimationData {
                 y_scale = ComponentType::Animated(frame);
             }
 
-            dbg!(&y_scale);
-
             let z_scale;
             if anim_ty_code.scale_z_fixed {
                 z_scale = ComponentType::Fixed(reader.read_f32::<BigEndian>()?);
@@ -500,8 +539,6 @@ impl AnimationData {
                     Self::decode_anim_frame(reader, bone_data_start, anim_ty_code.scale_format)?;
                 z_scale = ComponentType::Animated(frame);
             }
-
-            dbg!(&z_scale);
 
             Ok(ComponentData {
                 x: x_scale,
@@ -517,7 +554,7 @@ impl AnimationData {
         anim_code: &AnimationCode,
     ) -> EncodingResult<ComponentData> {
         tracing::trace!(
-            "Decoding rotation animations (iso: {}, x fixed: {}, y fixed: {}, z fixed: {})",
+            "Reading rotation animations (iso: {}, x fixed: {}, y fixed: {}, z fixed: {})",
             anim_code.rotation_isotropic,
             anim_code.rotation_x_fixed,
             anim_code.rotation_y_fixed,
@@ -576,6 +613,14 @@ impl AnimationData {
         bone_data_start: u32,
         anim_code: &AnimationCode,
     ) -> EncodingResult<ComponentData> {
+        tracing::trace!(
+            "Reading translation animations (iso: {}, x fixed: {}, y fixed: {}, z fixed: {})",
+            anim_code.translation_isotropic,
+            anim_code.x_fixed,
+            anim_code.y_fixed,
+            anim_code.z_fixed
+        );
+
         if anim_code.translation_isotropic {
             let iso_trans = if anim_code.x_fixed {
                 ComponentType::Fixed(reader.read_f32::<BigEndian>()?)
@@ -676,6 +721,7 @@ pub struct Chr0Bone {
 }
 
 impl Chr0Bone {
+    #[tracing::instrument(skip(reader, bone_data_start))]
     pub fn decode(
         reader: &mut Cursor<&[u8]>,
         bone_data_start: u32,
@@ -719,7 +765,6 @@ impl Chr0Subfile {
 
         for entry in &bones_group.entries[1..] {
             let name = bones_group.get_entry_name(reader.get_ref(), entry)?;
-            dbg!(name);
 
             let data_start = bones_group.get_entry_data_start(entry);
             reader.set_position(data_start as u64);
