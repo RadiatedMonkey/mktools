@@ -5,7 +5,10 @@ use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 use crate::{
     chr0::Chr0Subfile,
     encoding::{Decode, Encode, ReadArrayExt, ReadStringExt},
-    error::{EncodingError, EncodingResult},
+    error::{
+        CorruptionError, EncodingError, EncodingResult, IncorrectFormat, RangeError,
+        UnsupportedError,
+    },
     mdl0::Mdl0Subfile,
     pat0::Pat0Subfile,
 };
@@ -24,32 +27,39 @@ fn get_section_count(ty: SubfileType, version: u32) -> EncodingResult<usize> {
             8 => 11,
             11 => 14,
             _ => {
-                return Err(EncodingError::InvalidFile(format!(
-                    "invalid MDL0 version: {version} (must be 8, 11)"
-                )));
+                return Err(CorruptionError {
+                    reason: format!("invalid MDL0 version: {version} (must be 8, 11)"),
+                    ..Default::default()
+                }
+                .into());
             }
         },
         SubfileType::Chr0 => match version {
             // 3 => 1,
             3 => {
-                return Err(EncodingError::Unsupported(
-                    "CHR0 version 3 is untested".to_owned(),
-                ));
+                return Err(UnsupportedError {
+                    reason: "CHR0 version 3".to_owned(),
+                    ..Default::default()
+                }
+                .into());
             }
             5 => 2,
             _ => {
-                return Err(EncodingError::InvalidFile(format!(
-                    "invalid CHR0 version: {version} (must be 3, 5)"
-                )));
+                return Err(CorruptionError {
+                    reason: format!("invalid CHR0 version: {version} (must be 3, 5)"),
+                    ..Default::default()
+                }
+                .into());
             }
         },
         SubfileType::Pat0 => match version {
             4 => 6,
             _ => {
-                return Err(EncodingError::InvalidFile(format!(
-                    "
-                    invalid PAT0 version: {version} (must be 4)"
-                )));
+                return Err(CorruptionError {
+                    reason: format!("invalid PAT0 version: {version} (must be 4)"),
+                    ..Default::default()
+                }
+                .into());
             }
         },
     })
@@ -66,25 +76,34 @@ impl Decode for Header {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let magic = reader.read_u8_array::<4>()?;
         if magic != BRRES_MAGIC {
-            return Err(EncodingError::InvalidFile(
-                "brres file does not have the correct magic".to_owned(),
-            ));
+            return Err(IncorrectFormat {
+                expected_magic: BRRES_MAGIC.to_vec(),
+                found_magic: magic.to_vec(),
+                location: Some(reader.position()),
+            }
+            .into());
         }
 
         let is_be = match reader.read_u8_array::<2>()? {
             BE_BOM => true,
             LE_BOM => false,
             bom => {
-                return Err(EncodingError::InvalidFile(format!(
-                    "byte order mark is incorrect, expected FEFF or FFFE, found {bom:x?}"
-                )));
+                return Err(CorruptionError {
+                    reason: format!(
+                        "byte order mark is incorrect, expected FEFF or FFFE, found {bom:x?}"
+                    ),
+                    ..Default::default()
+                }
+                .into());
             }
         };
 
         if !is_be {
-            return Err(EncodingError::Unsupported(
-                "little endian brres files are not supported".to_owned(),
-            ));
+            return Err(UnsupportedError {
+                reason: "little endian brres files are not supported".to_owned(),
+                ..Default::default()
+            }
+            .into());
         }
 
         let _padding = reader.read_u16::<BigEndian>()?;
@@ -113,9 +132,12 @@ impl Decode for RootSubfile {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let magic = reader.read_u8_array::<4>()?;
         if magic != Self::MAGIC {
-            return Err(EncodingError::InvalidFile(
-                "root subfile has incorrect magic".to_owned(),
-            ));
+            return Err(IncorrectFormat {
+                expected_magic: Self::MAGIC.to_vec(),
+                found_magic: magic.to_vec(),
+                location: Some(reader.position()),
+            }
+            .into());
         }
 
         Ok(RootSubfile {
@@ -176,10 +198,11 @@ impl SubfileHeader {
     /// Obtains the starting index of the specified section.
     pub fn get_section_start(&self, section_index: usize) -> EncodingResult<u32> {
         let offset = *self.offsets.get(section_index).ok_or_else(|| {
-            EncodingError::OutOfRange(format!(
-                "index {section_index} out of range 0..{}",
-                self.offsets.len() - 1
-            ))
+            EncodingError::from(RangeError {
+                requested: section_index as u64,
+                range: 0..self.offsets.len() as u64,
+                ..Default::default()
+            })
         })?;
 
         Ok((self.header_start as i32 + offset) as u32)
@@ -380,10 +403,11 @@ impl Archive {
             Pat0Subfile::MAGIC => SubfileData::Pat0(Pat0Subfile::decode(index, reader)?),
             Chr0Subfile::MAGIC => SubfileData::Chr0(Chr0Subfile::decode(reader)?),
             _ => {
-                return Err(EncodingError::InvalidFile(format!(
-                    "unknown file type encountered in child index group: {}",
-                    String::from_utf8_lossy(&magic)
-                )));
+                return Err(UnsupportedError {
+                    reason: format!("file type `{}`", String::from_utf8_lossy(&magic)),
+                    location: Some(reader.position()),
+                }
+                .into());
             }
         })
     }
@@ -426,7 +450,6 @@ impl Decode for Archive {
                     reader.position()
                 );
                 let file = Self::decode_subfile(reader, file)?;
-                dbg!(file);
             }
         }
 

@@ -3,7 +3,8 @@ use std::io::Cursor;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::encoding::{Decode, Encode, ReadArrayExt, WriteArrayExt};
-use crate::error::{EncodingError, EncodingResult};
+use crate::error::IncorrectFormat;
+use crate::error::{CorruptionError, EncodingError, EncodingResult};
 
 /// Magic of a YAZ0 file.
 const YAZ0_MAGIC: [u8; 4] = [0x59, 0x61, 0x7a, 0x30];
@@ -30,9 +31,12 @@ impl Decode for Header {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let magic = reader.read_u8_array::<4>()?;
         if magic != YAZ0_MAGIC {
-            return Err(EncodingError::InvalidFile(
-                "YAZ0 magic does not equal `Yaz0`".to_owned(),
-            ));
+            return Err(IncorrectFormat {
+                expected_magic: YAZ0_MAGIC.to_vec(),
+                found_magic: magic.to_vec(),
+                location: Some(reader.position()),
+            }
+            .into());
         }
 
         let uncompressed_size = reader.read_u32::<BigEndian>()?;
@@ -145,9 +149,10 @@ impl Decode for Yaz0File {
                     }
 
                     let copy_start = uncompressed.len().checked_sub(rrr + 1).ok_or_else(|| {
-                        EncodingError::InvalidFile(
-                            "data group references byte before start of file".to_owned(),
-                        )
+                        EncodingError::from(CorruptionError {
+                            reason: "data group references byte before start of file".to_owned(),
+                            location: Some(reader.position()),
+                        })
                     })?;
 
                     for i in 0..copy_size {
@@ -159,11 +164,15 @@ impl Decode for Yaz0File {
         }
 
         if uncompressed.len() != header.uncompressed_size as usize {
-            return Err(EncodingError::InvalidFile(format!(
-                "uncompressed size in header does not equal actual size ({} vs. {})",
-                header.uncompressed_size,
-                uncompressed.len()
-            )));
+            return Err(CorruptionError {
+                reason: format!(
+                    "uncompressed size in header does not equal actual size ({} vs. {})",
+                    header.uncompressed_size,
+                    uncompressed.len()
+                ),
+                ..Default::default()
+            }
+            .into());
         }
 
         tracing::trace!("Successfully decompressed {total_chunks} chunks in Yaz0 archive");

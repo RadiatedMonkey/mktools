@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use byteorder::{ByteOrder, ReadBytesExt, WriteBytesExt};
 
-use crate::error::{EncodingError, EncodingResult};
+use crate::error::{CorruptionError, EncodingError, EncodingResult};
 
 macro_rules! impl_byteorder_arrays {
     ($($ty: ty),*) => {
@@ -129,9 +129,10 @@ impl<'buf> ReadStringExt<'buf> for Cursor<&'buf [u8]> {
             .iter()
             .position(|&b| b == 0x00)
             .ok_or_else(|| {
-                EncodingError::InvalidFile(
-                    "did not find string null terminator before EOF".to_owned(),
-                )
+                EncodingError::from(CorruptionError {
+                    reason: "did not find string null terminator before EOF".to_owned(),
+                    ..Default::default()
+                })
             })?;
 
         Ok(str::from_utf8(&start_buffer[..null_position as usize])?)

@@ -5,7 +5,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 use crate::{
     brres::{IndexGroup, IndexGroupEntry, Subfile, SubfileHeader, SubfileType},
     encoding::{Decode, ReadStringExt},
-    error::{EncodingError, EncodingResult},
+    error::{CorruptionError, EncodingError, EncodingResult},
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -22,9 +22,11 @@ impl TryFrom<u32> for AnimationPolicy {
             0x00 => Self::OneTime,
             0x01 => Self::Loop,
             _ => {
-                return Err(EncodingError::InvalidFile(format!(
-                    "invalid animation policy: {value} (expected 0 or 1)"
-                )));
+                return Err(CorruptionError {
+                    reason: format!("invalid animation policy: {value} (expected 0 or 1)"),
+                    ..Default::default()
+                }
+                .into());
             }
         })
     }
@@ -54,10 +56,11 @@ impl TryFrom<u32> for ScalingRule {
             0x01 => Self::Softimage,
             0x02 => Self::Maya,
             _ => {
-                return Err(EncodingError::InvalidFile(format!(
-                    "invalid scaling rule: {} (expected 0, 1 or 2)",
-                    value
-                )));
+                return Err(CorruptionError {
+                    reason: format!("invalid scaling rule: {} (expected 0, 1 or 2)", value),
+                    ..Default::default()
+                }
+                .into());
             }
         })
     }
@@ -131,9 +134,11 @@ impl TryFrom<u8> for AnimationFormat {
             0b100 => Self::Linear1,
             0b110 => Self::Linear4,
             _ => {
-                return Err(EncodingError::InvalidFile(format!(
-                    "invalid animation format: {value:#b}"
-                )));
+                return Err(CorruptionError {
+                    reason: format!("invalid animation format: {value:#b}"),
+                    ..Default::default()
+                }
+                .into());
             }
         })
     }
@@ -233,16 +238,22 @@ apply_masks! {
     use_identity
 }
 
+/// The type of animation that is applied to the bone.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ComponentType {
+    /// The bone stays in place throughout the entire animation.
     Fixed(f32),
+    /// The bone is animated.
     Animated(AnimationFrames),
 }
 
+/// A 4-byte animation frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Frame4Info {
+    /// The index of this frame in the animation.
     pub index: u8,
     pub step: u8,
+    /// The tangent line to the interpolation slope of the animation.
     pub tangent: f32,
 }
 
@@ -342,7 +353,7 @@ pub struct Interpolated6Frame {
 impl Decode for Interpolated6Frame {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let frame_count = reader.read_u16::<BigEndian>()?;
-        let unknown1 = reader.read_u16::<BigEndian>()?;
+        let _unknown1 = reader.read_u16::<BigEndian>()?;
         let frame_scale = reader.read_f32::<BigEndian>()?;
         let step = reader.read_f32::<BigEndian>()?;
         let base = reader.read_f32::<BigEndian>()?;
@@ -411,6 +422,8 @@ impl AnimationData {
 
         let frame_start = bone_data_start as i64 + frame_offset;
         reader.set_position(frame_start as u64);
+
+        dbg!(frame_start);
 
         let frames = match format {
             AnimationFormat::Interpolated4 => {
@@ -526,7 +539,7 @@ impl AnimationData {
                 z: iso_rot,
             })
         } else {
-            let z_rot = if anim_code.rotation_z_fixed {
+            let x_rot = if anim_code.rotation_x_fixed {
                 ComponentType::Fixed(reader.read_f32::<BigEndian>()?)
             } else {
                 let frame =
@@ -542,7 +555,7 @@ impl AnimationData {
                 ComponentType::Animated(frame)
             };
 
-            let x_rot = if anim_code.rotation_x_fixed {
+            let z_rot = if anim_code.rotation_z_fixed {
                 ComponentType::Fixed(reader.read_f32::<BigEndian>()?)
             } else {
                 let frame =
@@ -704,18 +717,15 @@ impl Chr0Subfile {
         let bones_group = IndexGroup::decode(reader)?;
         let mut bones = Vec::with_capacity(bones_group.entries.len());
 
-        for entry in &bones_group.entries[1..2] {
+        for entry in &bones_group.entries[1..] {
             let name = bones_group.get_entry_name(reader.get_ref(), entry)?;
             dbg!(name);
 
             let data_start = bones_group.get_entry_data_start(entry);
             reader.set_position(data_start as u64);
 
-            dbg!(data_start, subfile_header.header_start);
-
             tracing::trace!("Reading CHR0 animations for bone `{name}` at location {data_start}");
             bones.push(Chr0Bone::decode(reader, data_start, name)?);
-            tracing::debug!("last bone {:#?}", bones.last());
         }
 
         Ok(Self {

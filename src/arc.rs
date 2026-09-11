@@ -4,7 +4,7 @@ use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::{
     encoding::{Decode, Encode, ReadArrayExt, WriteArrayExt},
-    error::{EncodingError, EncodingResult},
+    error::{CorruptionError, EncodingError, EncodingResult, IncorrectFormat},
 };
 
 /// Magic of an ARC file.
@@ -27,9 +27,12 @@ impl Decode for Header {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         let magic = reader.read_u32::<BigEndian>()?;
         if magic != ARC_MAGIC {
-            return Err(EncodingError::InvalidFile(
-                "ARC file magic is incorrect".to_owned(),
-            ));
+            return Err(IncorrectFormat {
+                expected_magic: ARC_MAGIC.to_be_bytes().to_vec(),
+                found_magic: magic.to_be_bytes().to_vec(),
+                location: Some(reader.position()),
+            }
+            .into());
         }
 
         let node_offset = reader.read_i32::<BigEndian>()?;
@@ -87,9 +90,13 @@ impl TryFrom<u8> for RawNodeType {
             0 => RawNodeType::File,
             1 => RawNodeType::Directory,
             v => {
-                return Err(EncodingError::InvalidFile(format!(
-                    "arc node type is expected to be either 0 (file) or 1 (directory), got {v}"
-                )));
+                return Err(CorruptionError {
+                    reason: format!(
+                        "arc node type is expected to be either 0 (file) or 1 (directory), got {v}"
+                    ),
+                    ..Default::default()
+                }
+                .into());
             }
         })
     }
@@ -275,10 +282,10 @@ impl Decode for Archive {
                     );
 
                     if data_end > reader_buf.len() {
-                        return Err(EncodingError::InvalidFile(format!(
-                            "file node data range {data_start}..{data_end} exceeds file length {}",
-                            reader_buf.len()
-                        )));
+                        return Err(CorruptionError {
+                            reason: format!("file node data range {data_start}..{data_end} exceeds file length {}", reader_buf.len()),
+                            location: Some(reader.position())
+                        }.into());
                     }
 
                     NodeType::File {
