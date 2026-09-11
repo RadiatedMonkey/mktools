@@ -25,7 +25,12 @@ fn get_section_count(ty: SubfileType, version: u32) -> EncodingResult<usize> {
             }
         },
         SubfileType::Chr0 => match version {
-            3 => 1,
+            // 3 => 1,
+            3 => {
+                return Err(EncodingError::Unsupported(
+                    "CHR0 version 3 is untested".to_owned(),
+                ));
+            }
             5 => 2,
             _ => {
                 return Err(EncodingError::InvalidFile(format!(
@@ -256,23 +261,78 @@ impl Decode for Chr0Header {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnimationTypeCode {
+
+}
+
+const TRANSLATION_FORMAT_MASK: u32 = 0xc0000000; // Bits 31-30
+const ROTATION_FORMAT_MASK: u32 = 0x38000000; // Bits
+const SCALE_FORMAT_MASK: u32 = 0x06000000; // Bits 27-26
+const HAS_TRANSLATION_MASK: u32 = 0x01000000; // Bit 25
+const HAS_ROTATION_MASK: u32 = 0x00800000; // Bit 24
+const HAS_SCALE_MASK: u32 = 0x00400000; // Bit 23
+const Z_FIXED_MASK: u32 = 0x00200000; // Bit 22
+const Y_FIXED_MASK: u32 = 0x00100000; // Bit 21
+const X_FIXED_MASK: u32 = 0x00080000; // Bit 20
+const ROTATION_Z_FIXED_MASK: u32 = 0x00040000; // Bit 19
+const ROTATION_Y_FIXED_MASK: u32 = 0x00020000; // Bit 18
+const ROTATION_X_FIXED_MASK: u32 = 0x00010000; // Bit 17
+const SCALE_Z_FIXED_MASK: u32 = 0x00008000; // Bit 16
+const SCALE_Y_FIXED_MASK: u32 = 0x00004000; // Bit 15
+const SCALE_X_FIXED_MASK: u32 = 0x00002000; // Bit 14
+const DISABLE_CLASSIC_SCALE_MASK: u32 = 0x00001000; // Bit 13
+const APPLY_CHILD_SCALE_COMPENSATE_MASK: u32 = 0x00000800; // Bit 12
+const APPLY_SCALE_COMPENSATE: u32 = 0x00000400; // Bit 11
+const USE_MODEL_TRANSLATION_MASK: u32 = 0x00000200; // Bit 10
+const USE_MODEL_ROTATION_MASK: u32 = 0x00000100; // Bit 9
+const USE_MODEL_SCALE_MASK: u32 = 0x00000080; // Bit 8
+const TRANSLATION_ISOTROPIC_MASK: u32 = 0x00000040; // Bit 7
+const ROTATION_ISOTROPIC_MASK: u32 = 0x0000020; // Bit 6
+const SCALE_UNIFORM_MASK: u32 = 0x00000010; // Bit 5
+const SCALE_ISOTROPIC_MASK: u32 = 0x00000008; // Bit 4
+const ROTATION_TRANSLATION_ISTROPIC_MASK: u32 = 0x00000004; // Bit 3
+const USE_IDENTITY_MASK: u32 = 0x00000002; // Bit 2
+
+impl TryFrom<u32> for AnimationTypeCode {
+    type Error = EncodingError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        let translation_format =
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnimationData {}
+
+impl Decode for AnimationData {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let bone_name_offset = reader.read_u32::<BigEndian>()?;
+        let anim_ty_code = reader.read_u32::<BigEndian>()?;
+
+
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chr0Subfile {
     pub subfile_header: SubfileHeader,
     pub chr0_header: Chr0Header,
+    pub animation_data: AnimationData,
 }
 
-impl Decode for Chr0Subfile {
-    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+impl Chr0Subfile {
+    fn decode(index: &IndexGroupEntry, reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         tracing::trace!("Reading CHR0 file");
 
         let subfile_header = SubfileHeader::decode(reader, SubfileType::Chr0)?;
-        dbg!(subfile_header);
 
+        reader.set_position(reader.position() + 4); // there are 4 bytes of padding between the headers
         let chr0_header = Chr0Header::decode(reader)?;
 
-        // dbg!(subfile_header, chr0_header);
+        reader.set_position(index.data_pointer as u64);
+        let anim_data = AnimationData::decode(reader)?;
 
-        todo!()
+        todo!();
     }
 }
 
@@ -503,6 +563,8 @@ impl Decode for Archive {
                 tracing::trace!("Discovered file `{folder_name}/{file_name}`");
 
                 reader.set_position(child_group.get_entry_data_start(file) as u64);
+                dbg!(reader.position());
+
                 let file = Self::decode_subfile(reader)?;
                 dbg!(file);
             }
