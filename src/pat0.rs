@@ -1,12 +1,104 @@
 use std::io::Cursor;
 
-use crate::{brres::Subfile, error::EncodingResult};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+
+use crate::{
+    brres::{IndexGroupEntry, Subfile, SubfileHeader, SubfileType},
+    encoding::{Decode, Encode},
+    error::EncodingResult,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pat0Subfile {}
+pub struct Pat0Header {
+    pub frame_count: u16,
+    pub base_number: u16,
+    pub string_number: u16,
+    pub cyclic: bool,
+}
+
+impl Decode for Pat0Header {
+    fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let _unknown12 = reader.read_u32::<BigEndian>()?; // 2 + 2 unknown bytes
+        let frame_count = reader.read_u16::<BigEndian>()?;
+        let base_number = reader.read_u16::<BigEndian>()?;
+        let string_number = reader.read_u16::<BigEndian>()?;
+        let _unknown34 = reader.read_u32::<BigEndian>()?; // 2 + 2 unknown bytes
+        let cyclic = reader.read_u16::<BigEndian>()? != 0;
+
+        Ok(Self {
+            frame_count,
+            base_number,
+            string_number,
+            cyclic,
+        })
+    }
+}
+
+impl Encode for Pat0Header {
+    fn encode_into(&self, writer: &mut Vec<u8>) -> EncodingResult<()> {
+        writer.write_u32::<BigEndian>(0)?; // Unknown
+        writer.write_u16::<BigEndian>(self.frame_count)?;
+        writer.write_u16::<BigEndian>(self.base_number)?;
+        writer.write_u16::<BigEndian>(self.string_number)?;
+        writer.write_u32::<BigEndian>(0)?; // Unknown
+        writer.write_u16::<BigEndian>(self.cyclic as u16)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnimationSection {}
+
+/// Both section #1 and section #3 have the same format of `string_number` amount of u32s.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct U32Section {
+    pub offsets: Vec<u32>,
+}
+
+impl U32Section {
+    pub fn decode(reader: &mut Cursor<&[u8]>, string_number: u16) -> EncodingResult<Self> {
+        let mut offsets = Vec::with_capacity(string_number as usize);
+        for _ in 0..string_number {
+            offsets.push(reader.read_u32::<BigEndian>()?);
+        }
+
+        Ok(Self { offsets })
+    }
+}
+
+impl Encode for U32Section {
+    fn encode_into(&self, writer: &mut Vec<u8>) -> EncodingResult<()> {
+        for &offset in &self.offsets {
+            writer.write_u32::<BigEndian>(offset);
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pat0Subfile {
+    pub subfile_header: SubfileHeader,
+    pub pat0_header: Pat0Header,
+}
 
 impl Pat0Subfile {
-    pub fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+    pub fn decode(group: &IndexGroupEntry, reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+        let subfile_header = SubfileHeader::decode(reader, SubfileType::Pat0)?;
+        let pat0_header = Pat0Header::decode(reader)?;
+
+        // Section #1 and #3 are offsets
+        reader.set_position(subfile_header.get_section_start(1)? as u64);
+        let string_list = U32Section::decode(reader, pat0_header.string_number)?;
+
+        dbg!(string_list);
+
+        reader.set_position(subfile_header.get_section_start(3)? as u64);
+        let string_attribs = U32Section::decode(reader, pat0_header.string_number)?;
+
+        dbg!(string_attribs);
+
         todo!()
     }
 }

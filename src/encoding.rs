@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use byteorder::{ByteOrder, ReadBytesExt, WriteBytesExt};
 
-use crate::error::EncodingResult;
+use crate::error::{EncodingError, EncodingResult};
 
 macro_rules! impl_byteorder_arrays {
     ($($ty: ty),*) => {
@@ -94,6 +94,49 @@ macro_rules! impl_byteorder_arrays {
 }
 
 impl_byteorder_arrays!(u16, i16, u32, i32, u64, i64, u128, i128);
+
+pub trait ReadStringExt<'buf>: ReadBytesExt {
+    /// Reads a `&str` with a `u32` length prefix.
+    fn read_u32_str<B: byteorder::ByteOrder>(&mut self) -> EncodingResult<&'buf str>;
+    /// Reads a `&str` with a null terminator.
+    fn read_null_str<B: byteorder::ByteOrder>(&mut self) -> EncodingResult<&'buf str>;
+
+    /// Reads a `String` with a `u32` length prefix.
+    fn read_u32_string<B: byteorder::ByteOrder>(&mut self) -> EncodingResult<String> {
+        let str = self.read_u32_str::<B>()?;
+        Ok(str.to_owned())
+    }
+
+    /// Reads a `String` with a null terminator.
+    fn read_null_string<B: byteorder::ByteOrder>(&mut self) -> EncodingResult<String> {
+        let str = self.read_null_str::<B>()?;
+        Ok(str.to_owned())
+    }
+}
+
+impl<'buf> ReadStringExt<'buf> for Cursor<&'buf [u8]> {
+    fn read_u32_str<B: byteorder::ByteOrder>(&mut self) -> EncodingResult<&'buf str> {
+        let str_len = self.read_u32::<B>()?;
+        let str_buffer =
+            &self.get_ref()[self.position() as usize..str_len as usize + self.position() as usize];
+
+        Ok(str::from_utf8(str_buffer)?)
+    }
+
+    fn read_null_str<B: byteorder::ByteOrder>(&mut self) -> EncodingResult<&'buf str> {
+        let start_buffer = &self.get_ref()[self.position() as usize..];
+        let null_position = start_buffer
+            .iter()
+            .position(|&b| b == 0x00)
+            .ok_or_else(|| {
+                EncodingError::InvalidFile(
+                    "did not find string null terminator before EOF".to_owned(),
+                )
+            })?;
+
+        Ok(str::from_utf8(&start_buffer[..null_position as usize])?)
+    }
+}
 
 pub trait Decode: Sized {
     fn decode(reader: &mut Cursor<&[u8]>) -> EncodingResult<Self>;

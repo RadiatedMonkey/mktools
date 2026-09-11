@@ -3,7 +3,7 @@ use std::io::Cursor;
 use byteorder::{BigEndian, ReadBytesExt};
 
 use crate::{
-    brres::{IndexGroupEntry, Subfile, SubfileHeader, SubfileType},
+    brres::{IndexGroup, IndexGroupEntry, Subfile, SubfileHeader, SubfileType},
     encoding::Decode,
     error::{EncodingError, EncodingResult},
 };
@@ -238,10 +238,12 @@ pub struct Chr0Subfile {
     pub subfile_header: SubfileHeader,
     pub chr0_header: Chr0Header,
     pub animation_data: AnimationData,
+
+    pub index_group: IndexGroup,
 }
 
 impl Chr0Subfile {
-    pub fn decode(index: &IndexGroupEntry, reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
+    pub fn decode(group: &IndexGroupEntry, reader: &mut Cursor<&[u8]>) -> EncodingResult<Self> {
         tracing::trace!("Reading CHR0 file");
 
         let subfile_header = SubfileHeader::decode(reader, SubfileType::Chr0)?;
@@ -249,8 +251,22 @@ impl Chr0Subfile {
         reader.set_position(reader.position() + 4); // there are 4 bytes of padding between the headers
         let chr0_header = Chr0Header::decode(reader)?;
 
-        reader.set_position(index.data_pointer as u64);
-        let anim_data = AnimationData::decode(reader)?;
+        // This subgroup references all the bones in the animation file.
+        let subgroup = IndexGroup::decode(reader)?;
+        dbg!(&subgroup);
+
+        for entry in &subgroup.entries {
+            let name = subgroup.get_entry_name(reader.get_ref(), entry)?;
+            dbg!(name);
+
+            let data = subgroup.get_entry_data_start(entry);
+            reader.set_position(data as u64);
+
+            let bone_name_offset = reader.read_u32::<BigEndian>()?;
+
+            let animation_ty_code = AnimationTypeCode::decode(reader)?;
+            dbg!(animation_ty_code);
+        }
 
         todo!();
     }

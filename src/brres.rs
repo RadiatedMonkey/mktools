@@ -4,7 +4,7 @@ use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::{
     chr0::Chr0Subfile,
-    encoding::{Decode, Encode, ReadArrayExt},
+    encoding::{Decode, Encode, ReadArrayExt, ReadStringExt},
     error::{EncodingError, EncodingResult},
     mdl0::Mdl0Subfile,
     pat0::Pat0Subfile,
@@ -130,6 +130,9 @@ impl Subfile for RootSubfile {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubfileHeader {
+    /// Start position of this header. This is used to compute subfile section positions using their
+    /// offsets.
+    pub header_start: u32,
     /// Length of this subfile.
     pub subfile_length: u32,
     /// Version of ths subfile. For MDL0 this is either 8 or 11.
@@ -146,6 +149,7 @@ pub struct SubfileHeader {
 
 impl SubfileHeader {
     pub fn decode(reader: &mut Cursor<&[u8]>, ty: SubfileType) -> EncodingResult<Self> {
+        let header_start = reader.position() as u32;
         let subfile_length = reader.read_u32::<BigEndian>()?;
         let subfile_version = reader.read_u32::<BigEndian>()?;
         let brres_offset = reader.read_i32::<BigEndian>()?;
@@ -160,12 +164,25 @@ impl SubfileHeader {
         let name_offset = reader.read_i32::<BigEndian>()?;
 
         Ok(Self {
+            header_start,
             subfile_length,
             subfile_version,
             brres_offset,
             offsets,
             name_offset,
         })
+    }
+
+    /// Obtains the starting index of the specified section.
+    pub fn get_section_start(&self, section_index: usize) -> EncodingResult<u32> {
+        let offset = *self.offsets.get(section_index).ok_or_else(|| {
+            EncodingError::OutOfRange(format!(
+                "index {section_index} out of range 0..{}",
+                self.offsets.len() - 1
+            ))
+        })?;
+
+        Ok((self.header_start as i32 + offset) as u32)
     }
 }
 
@@ -285,17 +302,17 @@ impl IndexGroup {
             return Ok(""); // This entry has no name.
         }
 
+        // Move cursor to name and then back after reading.
         let name_start = self.group_start + entry.name_pointer;
-        let name_buf = &data[name_start as usize - 4..];
-        let name_len = Cursor::new(name_buf).read_u32::<BigEndian>()? as usize;
-        let name = str::from_utf8(&name_buf[4..name_len + 4])?;
+        let mut reader = Cursor::new(&data[name_start as usize - 4..]);
+        let name = reader.read_u32_str::<BigEndian>()?;
 
         // Confirm both the null terminated and length prefixed strings are equal.
         // This is an extra check to ensure offsets are correct.
         #[cfg(debug_assertions)]
         {
-            let null_position = name_buf[4..].iter().position(|&b| b == 0).unwrap();
-            let null_name = str::from_utf8(&name_buf[4..4 + null_position as usize])?;
+            reader.set_position(4); // Skip length prefix.
+            let null_name = reader.read_null_str::<BigEndian>()?;
 
             debug_assert_eq!(
                 null_name, name,
@@ -306,7 +323,7 @@ impl IndexGroup {
         Ok(name)
     }
 
-    pub fn get_entry_data_start<'pool>(&self, entry: &IndexGroupEntry) -> u32 {
+    pub fn get_entry_data_start(&self, entry: &IndexGroupEntry) -> u32 {
         self.group_start + entry.data_pointer
     }
 }
@@ -360,6 +377,7 @@ impl Archive {
         let magic = reader.read_u8_array::<4>()?;
         Ok(match magic {
             Mdl0Subfile::MAGIC => SubfileData::Mdl0(Mdl0Subfile::decode(reader)?),
+            Pat0Subfile::MAGIC => SubfileData::Pat0(Pat0Subfile::decode(index, reader)?),
             Chr0Subfile::MAGIC => SubfileData::Chr0(Chr0Subfile::decode(index, reader)?),
             _ => {
                 return Err(EncodingError::InvalidFile(format!(
@@ -384,6 +402,7 @@ impl Decode for Archive {
         let root_group = IndexGroup::decode(reader)?;
         for folder in &root_group.entries[1..] {
             let folder_name = root_group.get_entry_name(reader.get_ref(), folder)?;
+
             tracing::trace!("Discovered folder `{folder_name}`");
 
             reader.set_position(root_group.get_entry_data_start(folder) as u64);

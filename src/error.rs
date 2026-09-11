@@ -2,6 +2,8 @@ use thiserror::Error;
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum EncodingError {
+    #[error("index out of range: {0}")]
+    OutOfRange(String),
     #[error("invalid file: {0}")]
     InvalidFile(String),
     #[error("invalid string:")]
