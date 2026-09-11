@@ -371,14 +371,14 @@ pub struct Archive {
 
 impl Archive {
     fn decode_subfile(
-        index: &IndexGroupEntry,
         reader: &mut Cursor<&[u8]>,
+        index: &IndexGroupEntry,
     ) -> EncodingResult<SubfileData> {
         let magic = reader.read_u8_array::<4>()?;
         Ok(match magic {
             Mdl0Subfile::MAGIC => SubfileData::Mdl0(Mdl0Subfile::decode(reader)?),
             Pat0Subfile::MAGIC => SubfileData::Pat0(Pat0Subfile::decode(index, reader)?),
-            Chr0Subfile::MAGIC => SubfileData::Chr0(Chr0Subfile::decode(index, reader)?),
+            Chr0Subfile::MAGIC => SubfileData::Chr0(Chr0Subfile::decode(reader)?),
             _ => {
                 return Err(EncodingError::InvalidFile(format!(
                     "unknown file type encountered in child index group: {}",
@@ -403,7 +403,10 @@ impl Decode for Archive {
         for folder in &root_group.entries[1..] {
             let folder_name = root_group.get_entry_name(reader.get_ref(), folder)?;
 
-            tracing::trace!("Discovered folder `{folder_name}`");
+            tracing::trace!(
+                "Discovered folder `{folder_name}` at location {}",
+                reader.position()
+            );
 
             reader.set_position(root_group.get_entry_data_start(folder) as u64);
 
@@ -411,12 +414,18 @@ impl Decode for Archive {
             let child_group = IndexGroup::decode(reader)?;
             for file in &child_group.entries[1..] {
                 let file_name = child_group.get_entry_name(reader.get_ref(), file)?;
-                tracing::trace!("Discovered file `{folder_name}/{file_name}`");
+                tracing::trace!(
+                    "Discovered file `{folder_name}/{file_name}` at location {}",
+                    reader.position()
+                );
 
                 reader.set_position(child_group.get_entry_data_start(file) as u64);
-                dbg!(reader.position());
 
-                let file = Self::decode_subfile(file, reader)?;
+                tracing::trace!(
+                    "Reading `{folder_name}/{file_name}` data section at location {}",
+                    reader.position()
+                );
+                let file = Self::decode_subfile(reader, file)?;
                 dbg!(file);
             }
         }

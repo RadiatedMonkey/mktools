@@ -10,6 +10,8 @@ pub mod yaz0;
 fn setup_tracing() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
+        .with_file(true)
+        .with_line_number(true)
         .init();
 }
 

@@ -106,12 +106,15 @@ impl Decode for Yaz0File {
         // Amount of chunks in a data group
         const CHUNK_COUNT: usize = 8;
 
+        let mut total_chunks = 0;
         while uncompressed.len() < uncompressed.capacity() {
             let mut group_header = reader.read_u8()?;
             for _ in 0..CHUNK_COUNT {
                 if uncompressed.len() >= uncompressed.capacity() {
                     break;
                 }
+
+                total_chunks += 1;
 
                 // If the bit is set, the chunk is 1 byte.
                 // Otherwise it is 2 or 3 bytes
@@ -163,7 +166,7 @@ impl Decode for Yaz0File {
             )));
         }
 
-        tracing::trace!("Successfully decompressed Yaz0 archive");
+        tracing::trace!("Successfully decompressed {total_chunks} chunks in Yaz0 archive");
 
         Ok(Self {
             header,

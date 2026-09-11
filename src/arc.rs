@@ -240,11 +240,13 @@ impl Decode for Archive {
         let header = Header::decode(reader)?;
         let root_node = RawNode::decode(reader)?;
         let node_count = root_node.data2;
-        tracing::trace!("Decoding {node_count} ARC nodes");
+        tracing::trace!("Reading {node_count} ARC nodes");
 
         // The string pool starts right after the last node.
         let spool_start = header.node_offset as usize + ARC_NODE_SIZE * node_count as usize;
         let spool_end = header.node_offset as usize + header.size as usize;
+        tracing::trace!("ARC string pool range is {spool_start}...{spool_end}");
+
         let spool = &reader.get_ref()[spool_start..spool_end];
 
         let mut raw_nodes = Vec::with_capacity(node_count as usize);
@@ -268,6 +270,10 @@ impl Decode for Archive {
                     let data_start = raw_node.data1 as usize;
                     let data_end = data_start + raw_node.data2 as usize;
 
+                    tracing::trace!(
+                        "Discovered file node `{name}` with data section {data_start}...{data_end}"
+                    );
+
                     if data_end > reader_buf.len() {
                         return Err(EncodingError::InvalidFile(format!(
                             "file node data range {data_start}..{data_end} exceeds file length {}",
@@ -280,10 +286,18 @@ impl Decode for Archive {
                         size: raw_node.data2,
                     }
                 }
-                RawNodeType::Directory => NodeType::Directory {
-                    parent: raw_node.data1,
-                    skip_node: raw_node.data2,
-                },
+                RawNodeType::Directory => {
+                    tracing::trace!(
+                        "Discovered directory node `{name}` (parent node: {}, end node: {})",
+                        raw_node.data1,
+                        raw_node.data2
+                    );
+
+                    NodeType::Directory {
+                        parent: raw_node.data1,
+                        skip_node: raw_node.data2,
+                    }
+                }
             };
 
             nodes.push(Node { name, data })
@@ -295,7 +309,7 @@ impl Decode for Archive {
             "not all bytes of the arc file were read"
         );
 
-        tracing::trace!("Successfully loaded node names and contents");
+        tracing::trace!("Successfully loaded node names and data pointers");
 
         Ok(Self { nodes })
     }
