@@ -388,8 +388,20 @@ impl Encode for IndexGroup {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ArchiveFolder {
+    pub name: String,
+    pub files: Vec<ArchiveFile>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArchiveFile {
+    pub name: String,
+    pub file: SubfileData,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Archive {
-    pub sections: Vec<SubfileData>,
+    pub folders: Vec<ArchiveFolder>,
 }
 
 impl Archive {
@@ -424,7 +436,9 @@ impl Decode for Archive {
 
         // Root group, which contains folders such as AnmChr(NW4R) or AnmTexPat(NW4R).
         let root_group = IndexGroup::decode(reader)?;
-        for folder in &root_group.entries[1..] {
+
+        let mut folders = Vec::with_capacity(root_group.entries.len() - 1);
+        for folder in &root_group.entries[1..2] {
             let folder_name = root_group.get_entry_name(reader.get_ref(), folder)?;
 
             tracing::trace!(
@@ -436,8 +450,11 @@ impl Decode for Archive {
 
             // Folder group which contains the actual subfiles.
             let child_group = IndexGroup::decode(reader)?;
+            let mut subfiles = Vec::with_capacity(child_group.entries.len() - 1);
+
             for file in &child_group.entries[1..] {
                 let file_name = child_group.get_entry_name(reader.get_ref(), file)?;
+
                 tracing::trace!(
                     "Discovered file `{folder_name}/{file_name}` at location {}",
                     reader.position()
@@ -452,9 +469,19 @@ impl Decode for Archive {
 
                 let file = tracing::trace_span!("decode_subfile", %folder_name, %file_name)
                     .in_scope(|| Self::decode_subfile(reader, file))?;
+
+                subfiles.push(ArchiveFile {
+                    name: file_name.to_owned(),
+                    file,
+                });
             }
+
+            folders.push(ArchiveFolder {
+                name: folder_name.to_owned(),
+                files: subfiles,
+            });
         }
 
-        todo!()
+        Ok(Self { folders })
     }
 }

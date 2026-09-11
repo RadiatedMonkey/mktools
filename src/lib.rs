@@ -65,6 +65,9 @@ mod test {
             let mut cursor = Cursor::new(content.as_slice());
             let mut brres = brres::Archive::decode(&mut cursor)?;
 
+            let dump = format!("{brres:#?}");
+            std::fs::write("brres.txt", dump).unwrap();
+
             Ok(())
         }
 
