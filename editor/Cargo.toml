@@ -1,13 +1,17 @@
 [package]
 name = "mktools"
+description = "Editor for Mario Kart Wii files"
 version = "0.1.0"
 edition = "2024"
+license = "Apache 2.0"
+repository = "https://github.com/RadiatedMonkey/mktools"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1.6"
+tracing-wasm = "0.2.1"
 
 wgpu = { version = "30.0.1", features = ["webgl"] }
 wasm-bindgen = "0.2.128"
